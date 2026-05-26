@@ -42,24 +42,32 @@ def page_login():
     st.title("🔐 登录 — 电商智能分析问答系统")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        username = st.text_input("用户名", key="login_user")
-        password = st.text_input("密码", type="password", key="login_pwd")
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("用户名", key="login_user", placeholder="请输入用户名")
+            password = st.text_input("密码", type="password", key="login_pwd", placeholder="请输入密码")
 
-        if st.button("登 录", use_container_width=True):
-            ok, msg, user = auth.login_user(username, password)
-            if ok:
-                st.session_state.authenticated = True
-                st.session_state.user = user
-                st.session_state.page = "main"
-                st.session_state.chat_history = []
-                st.rerun()
-            else:
-                st.error(msg)
+            submitted = st.form_submit_button("登 录", use_container_width=True)
+            if submitted:
+                if not username or not password:
+                    st.error("请输入用户名和密码")
+                else:
+                    with st.spinner("登录中..."):
+                        ok, msg, user = auth.login_user(username, password)
+                    if ok:
+                        st.session_state.authenticated = True
+                        st.session_state.user = user
+                        st.session_state.page = "main"
+                        st.session_state.chat_history = []
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
         st.divider()
-        if st.button("还没有账号？点击注册", use_container_width=True):
-            st.session_state.page = "register"
-            st.rerun()
+        _, btn_col, _ = st.columns([1, 2, 1])
+        with btn_col:
+            if st.button("还没有账号？点击注册", use_container_width=True):
+                st.session_state.page = "register"
+                st.rerun()
 
 
 # ================================================================
@@ -69,28 +77,38 @@ def page_register():
     st.title("📝 注册新账号")
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        username = st.text_input("用户名（仅字母数字）", key="reg_user")
-        email = st.text_input("邮箱（选填）", key="reg_email")
-        password = st.text_input("密码（至少6位）", type="password", key="reg_pwd")
-        password2 = st.text_input("确认密码", type="password", key="reg_pwd2")
+        with st.form("register_form", clear_on_submit=False):
+            username = st.text_input("用户名（仅字母数字）", key="reg_user", placeholder="3-20位字母或数字")
+            email = st.text_input("邮箱（选填）", key="reg_email", placeholder="optional@example.com")
+            password = st.text_input("密码（至少6位）", type="password", key="reg_pwd", placeholder="至少6位字符")
+            password2 = st.text_input("确认密码", type="password", key="reg_pwd2", placeholder="再次输入密码")
 
-        if st.button("注 册", use_container_width=True):
-            if not username or not password:
-                st.error("用户名和密码不能为空")
-            elif password != password2:
-                st.error("两次密码不一致")
-            else:
-                ok, msg = auth.register_user(username, password, email)
-                if ok:
-                    st.success(msg)
-                    st.session_state.page = "login"
-                    st.rerun()
+            submitted = st.form_submit_button("注 册", use_container_width=True)
+            if submitted:
+                if not username or not password:
+                    st.error("用户名和密码不能为空")
+                elif len(username) < 3:
+                    st.error("用户名至少3位")
+                elif len(password) < 6:
+                    st.error("密码至少6位")
+                elif password != password2:
+                    st.error("两次密码不一致")
                 else:
-                    st.error(msg)
+                    with st.spinner("注册中..."):
+                        ok, msg = auth.register_user(username, password, email)
+                    if ok:
+                        st.success(msg)
+                        st.session_state.page = "login"
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
-        if st.button("← 返回登录", use_container_width=True):
-            st.session_state.page = "login"
-            st.rerun()
+        st.divider()
+        _, btn_col, _ = st.columns([1, 2, 1])
+        with btn_col:
+            if st.button("← 返回登录", use_container_width=True):
+                st.session_state.page = "login"
+                st.rerun()
 
 
 # ================================================================
@@ -109,27 +127,43 @@ def page_main():
 
         # Module 1: Data loading
         st.subheader("📁 数据加载")
+
+        # Show current data source
+        if st.session_state.data_loaded:
+            source = st.session_state.get("data_source", "默认数据集")
+            st.caption(f"📌 当前: {source}")
+
         uploaded_file = st.file_uploader(
             "上传数据文件 (CSV/Excel/JSON)",
             type=["csv", "xlsx", "xls", "json"],
+            key="file_uploader",
         )
 
         if uploaded_file is not None:
-            try:
-                file_bytes = uploaded_file.read()
-                st.session_state.df_raw = data_loader.load_file(file_bytes, uploaded_file.name)
-                st.session_state.data_loaded = True
-                st.session_state.preprocessed = False
-                st.success(f"✅ 已加载: {uploaded_file.name}")
-            except Exception as e:
-                st.error(f"加载失败: {e}")
+            # Only reload if it's a different file
+            prev_name = st.session_state.get("uploaded_filename", "")
+            if prev_name != uploaded_file.name:
+                try:
+                    file_bytes = uploaded_file.read()
+                    st.session_state.df_raw = data_loader.load_file(file_bytes, uploaded_file.name)
+                    st.session_state.data_loaded = True
+                    st.session_state.preprocessed = False
+                    st.session_state.df_clean = None
+                    st.session_state.rfm_df = None
+                    st.session_state.uploaded_filename = uploaded_file.name
+                    st.session_state.data_source = f"上传: {uploaded_file.name}"
+                    st.success(f"✅ 已加载: {uploaded_file.name} ({len(st.session_state.df_raw):,} 行)")
+                except Exception as e:
+                    st.error(f"加载失败: {e}")
         else:
+            # Auto-load default dataset if nothing uploaded
             default_path = os.path.join(os.path.dirname(__file__), "data", "online_retail.csv")
             if os.path.exists(default_path) and not st.session_state.data_loaded:
                 try:
                     st.session_state.df_raw = pd.read_csv(default_path, encoding="utf-8")
                     st.session_state.data_loaded = True
-                    st.info("📦 已加载默认数据集")
+                    st.session_state.data_source = "默认: online_retail.csv"
+                    st.info("📦 已自动加载默认数据集")
                 except Exception:
                     st.warning("默认数据集不可用，请上传文件。")
 
@@ -137,21 +171,44 @@ def page_main():
 
         # Module 2: Preprocessing
         st.subheader("🔧 数据预处理")
-        if st.session_state.data_loaded and st.button("运行预处理", width="stretch"):
-            with st.spinner("处理中..."):
-                df = st.session_state.df_raw.copy()
-                df = preprocessor.preprocess_online_retail(df)
-                st.session_state.df_clean = df
-                st.session_state.rfm_df = preprocessor.get_rfm_table(df)
-                st.session_state.preprocessed = True
-            st.success(f"✅ 完成: {len(df):,} 条记录")
+        if st.session_state.data_loaded:
+            col_a, col_b = st.columns([3, 1])
+            with col_a:
+                if st.button("运行预处理", width="stretch"):
+                    with st.spinner("处理中..."):
+                        try:
+                            df = st.session_state.df_raw.copy()
+                            df = preprocessor.preprocess_online_retail(df)
+                            st.session_state.df_clean = df
+                            st.session_state.rfm_df = preprocessor.get_rfm_table(df)
+                            st.session_state.preprocessed = True
+                        except Exception as e:
+                            st.error(f"预处理出错: {e}")
+                            # Fallback to generic
+                            try:
+                                df = preprocessor.preprocess_generic(st.session_state.df_raw.copy())
+                                st.session_state.df_clean = df
+                                st.session_state.rfm_df = preprocessor.get_rfm_table(df)
+                                st.session_state.preprocessed = True
+                                st.info("已使用通用预处理")
+                            except Exception as e2:
+                                st.error(f"通用预处理也失败: {e2}")
+            with col_b:
+                if st.session_state.preprocessed and st.button("重置", width="stretch"):
+                    st.session_state.preprocessed = False
+                    st.session_state.df_clean = None
+                    st.session_state.rfm_df = None
+                    st.rerun()
 
-        if st.session_state.preprocessed:
-            df_c = st.session_state.df_clean
-            rfm = st.session_state.rfm_df
-            st.metric("有效交易", f"{len(df_c):,}")
-            st.metric("客户数", f"{rfm['CustomerID'].nunique():,}")
-            st.metric("总销售额", f"{df_c['TotalPrice'].sum():,.0f}")
+            if st.session_state.preprocessed:
+                df_c = st.session_state.df_clean
+                rfm = st.session_state.rfm_df
+                st.metric("有效记录", f"{len(df_c):,}")
+                st.metric("总销售额", f"{df_c['TotalPrice'].sum():,.0f}")
+                if rfm is not None:
+                    st.metric("客户/Segment", f"{len(rfm):,}")
+        else:
+            st.caption("请先加载数据")
 
         st.divider()
 
@@ -305,10 +362,10 @@ def page_main():
 
             has_llm, llm_error = qa_engine.get_llm_status()
             if has_llm:
-                st.success("🤖 DeepSeek AI 已连接 — 支持任意自然语言提问")
+                st.success("🤖 DeepSeek AI 已连接 — 畅聊无限制，数据分析/电商咨询/通用对话皆可")
             else:
                 if "DEEPSEEK_API_KEY" in llm_error:
-                    st.info("💡 提示：设置环境变量 `DEEPSEEK_API_KEY` 可接入 AI 智能体")
+                    st.info("💡 AI 未连接，使用规则引擎。设置 `DEEPSEEK_API_KEY` 可解锁无限问答能力")
                 else:
                     st.warning(f"⚠️ DeepSeek 连接异常: {llm_error}")
 
@@ -328,7 +385,7 @@ def page_main():
                     result = qa_engine.parse_query(query, df_clean, rfm)
 
                 if not has_llm and result.get("source") == "fallback":
-                    st.info("💡 该问题未匹配规则模板，接入 DeepSeek 后可自动理解。设置 `DEEPSEEK_API_KEY` 即可。")
+                    st.info("💡 该问题超出了规则引擎范围。接入 DeepSeek AI 后可回答任意问题，设置 `DEEPSEEK_API_KEY` 即可。")
 
                 st.chat_message("user").write(query)
                 source_tag = f"`[{result.get('source', 'rule')}]`"

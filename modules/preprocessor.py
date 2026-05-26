@@ -79,35 +79,103 @@ def remove_outliers_zscore(df: pd.DataFrame, columns: list, threshold: float = 3
     return df
 
 
+# Column name mappings for auto-detection (canonical -> common alternatives)
+COLUMN_ALIASES = {
+    "CustomerID": ["customerid", "customer_id", "customer", "client_id", "clientid", "user_id", "userid"],
+    "Description": ["description", "product", "product_name", "productname", "item", "name"],
+    "Quantity": ["quantity", "qty", "amount", "units", "volume"],
+    "UnitPrice": ["unitprice", "unit_price", "price", "cost", "单价", "price_per_unit"],
+    "InvoiceNo": ["invoiceno", "invoice_no", "invoice", "order_id", "orderid", "transaction_id", "tid"],
+    "InvoiceDate": ["invoicedate", "invoice_date", "date", "datetime", "timestamp", "order_date", "time"],
+    "StockCode": ["stockcode", "stock_code", "sku", "product_id", "productid", "item_code"],
+    "Country": ["country", "nation", "region", "area", "国家", "地区"],
+    "TotalPrice": ["totalprice", "total_price", "revenue", "sales", "amount"],
+}
+
+REQUIRED_ONLINE_RETAIL = ["CustomerID", "Quantity", "UnitPrice", "InvoiceNo", "InvoiceDate"]
+
+
+def _normalize_column_name(col: str) -> str:
+    """Map a column name to its canonical form, or return original."""
+    col_lower = col.lower().strip()
+    for canonical, aliases in COLUMN_ALIASES.items():
+        if col_lower in aliases or col_lower == canonical.lower():
+            return canonical
+    return col
+
+
+def auto_detect_columns(df: pd.DataFrame) -> dict:
+    """Detect and map DataFrame columns to canonical Online Retail names.
+
+    Returns a dict: {canonical_name: actual_column_name_in_df} for matched columns.
+    """
+    mapping = {}
+    for actual_col in df.columns:
+        canonical = _normalize_column_name(actual_col)
+        if canonical != actual_col:
+            mapping[canonical] = actual_col
+        else:
+            mapping[actual_col] = actual_col
+    return mapping
+
+
+def is_online_retail_dataset(df: pd.DataFrame) -> bool:
+    """Check if the dataset looks like Online Retail format."""
+    col_map = auto_detect_columns(df)
+    detected = set(col_map.keys())
+    required = {"Quantity", "UnitPrice", "InvoiceDate"}
+    return required.issubset(detected)
+
+
 def preprocess_online_retail(df: pd.DataFrame) -> pd.DataFrame:
     """Full preprocessing pipeline for the Online Retail dataset.
 
-    Steps:
-    1. Drop rows with missing CustomerID (can't do RFM without it)
-    2. Drop rows with missing Description
-    3. Filter out negative/zero Quantity and UnitPrice
-    4. Mark cancelled orders (InvoiceNo starts with 'C')
-    5. Create TotalPrice = Quantity * UnitPrice
-    6. Parse InvoiceDate to datetime, extract year/month/day/hour/weekday
-    7. Compute RFM (Recency, Frequency, Monetary) per customer
+    Auto-detects column names and falls back to generic preprocessing
+    if the dataset doesn't match the expected format.
     """
     df = df.copy()
 
-    # 1-2. Drop critical missing
-    df = df.dropna(subset=["CustomerID", "Description"])
-    df["CustomerID"] = df["CustomerID"].astype(int)
+    # Auto-detect columns
+    col_map = auto_detect_columns(df)
 
-    # 3. Filter valid transactions
-    df = df[(df["Quantity"] > 0) & (df["UnitPrice"] > 0)]
+    # Check if we have the minimum required columns for Online Retail pipeline
+    has_customer = "CustomerID" in col_map
+    has_quantity = "Quantity" in col_map
+    has_price = "UnitPrice" in col_map
+    has_date = "InvoiceDate" in col_map
+    has_invoice = "InvoiceNo" in col_map
 
-    # 4. Mark cancelled orders
-    df["IsCancelled"] = df["InvoiceNo"].astype(str).str.startswith("C")
+    # If missing core numeric columns, fall back to generic
+    if not (has_quantity and has_price and has_date):
+        return preprocess_generic(df)
 
-    # 5. Total price
-    df["TotalPrice"] = df["Quantity"] * df["UnitPrice"]
+    c_quantity = col_map["Quantity"]
+    c_price = col_map["UnitPrice"]
+    c_date = col_map["InvoiceDate"]
 
-    # 6. Date features
-    df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"], errors="coerce")
+    # 1. Drop critical missing (CustomerID and Description if present)
+    if has_customer:
+        df = df.dropna(subset=[col_map["CustomerID"]])
+        df[col_map["CustomerID"]] = df[col_map["CustomerID"]].astype(int)
+
+    desc_col = col_map.get("Description")
+    if desc_col and desc_col in df.columns:
+        df = df.dropna(subset=[desc_col])
+
+    # 2. Filter valid transactions
+    df = df[(df[c_quantity] > 0) & (df[c_price] > 0)]
+
+    # 3. Mark cancelled orders (if InvoiceNo present)
+    if has_invoice:
+        df["IsCancelled"] = df[col_map["InvoiceNo"]].astype(str).str.startswith("C")
+    else:
+        df["IsCancelled"] = False
+
+    # 4. Create TotalPrice
+    df["TotalPrice"] = df[c_quantity] * df[c_price]
+
+    # 5. Date features
+    df["InvoiceDate"] = pd.to_datetime(df[c_date], errors="coerce")
     df = df.dropna(subset=["InvoiceDate"])
     df["Year"] = df["InvoiceDate"].dt.year
     df["Month"] = df["InvoiceDate"].dt.month
@@ -117,38 +185,172 @@ def preprocess_online_retail(df: pd.DataFrame) -> pd.DataFrame:
     df["WeekdayName"] = df["InvoiceDate"].dt.day_name()
     df["YearMonth"] = df["InvoiceDate"].dt.to_period("M").astype(str)
 
-    # 7. Compute RFM
-    reference_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
-    rfm = df.groupby("CustomerID").agg(
-        Recency=("InvoiceDate", lambda x: (reference_date - x.max()).days),
-        Frequency=("InvoiceNo", "nunique"),
-        Monetary=("TotalPrice", "sum"),
-    ).reset_index()
-
-    # RFM scoring (1-4 quartile based)
-    rfm["R_Score"] = pd.qcut(rfm["Recency"], q=4, labels=[4, 3, 2, 1])
-    rfm["F_Score"] = pd.qcut(rfm["Frequency"].rank(method="first"), q=4, labels=[1, 2, 3, 4])
-    rfm["M_Score"] = pd.qcut(rfm["Monetary"].rank(method="first"), q=4, labels=[1, 2, 3, 4])
-    rfm["RFM_Score"] = (
-        rfm["R_Score"].astype(int) + rfm["F_Score"].astype(int) + rfm["M_Score"].astype(int)
-    )
-
-    def segment_rfm(score):
-        if score >= 10:
-            return "Champions"
-        elif score >= 8:
-            return "Loyal Customers"
-        elif score >= 6:
-            return "Potential Loyalists"
-        elif score >= 4:
-            return "At Risk"
+    # Rename key columns to canonical names for downstream compatibility
+    if has_customer and col_map["CustomerID"] != "CustomerID":
+        df["CustomerID"] = df[col_map["CustomerID"]]
+    if has_invoice and col_map["InvoiceNo"] != "InvoiceNo":
+        df["InvoiceNo"] = df[col_map["InvoiceNo"]]
+    country_col = col_map.get("Country")
+    if country_col and country_col != "Country":
+        df["Country"] = df[country_col]
+    elif "Country" not in df.columns:
+        df["Country"] = "Unknown"
+    desc_col = col_map.get("Description")
+    if desc_col and desc_col != "Description":
+        df["Description"] = df[desc_col]
+    elif "Description" not in df.columns:
+        stock_col = col_map.get("StockCode")
+        if stock_col:
+            df["Description"] = df[stock_col].astype(str)
         else:
-            return "Lost"
+            df["Description"] = "Unknown"
+    stock_col = col_map.get("StockCode")
+    if stock_col and stock_col != "StockCode":
+        df["StockCode"] = df[stock_col]
+    elif "StockCode" not in df.columns:
+        if "Description" in df.columns:
+            df["StockCode"] = df["Description"]
+        else:
+            df["StockCode"] = "SKU-UNKNOWN"
 
-    rfm["Segment"] = rfm["RFM_Score"].apply(segment_rfm)
+    # 6. Compute RFM (only if CustomerID exists)
+    if "CustomerID" in df.columns:
+        reference_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
+        rfm = df.groupby("CustomerID").agg(
+            Recency=("InvoiceDate", lambda x: (reference_date - x.max()).days),
+            Frequency=("InvoiceNo", "nunique") if "InvoiceNo" in df.columns else ("TotalPrice", "count"),
+            Monetary=("TotalPrice", "sum"),
+        ).reset_index()
 
-    # Merge RFM back to main df (keep per-customer info)
-    df = df.merge(rfm, on="CustomerID", how="left")
+        try:
+            rfm["R_Score"] = pd.qcut(rfm["Recency"], q=4, labels=[4, 3, 2, 1])
+            rfm["F_Score"] = pd.qcut(rfm["Frequency"].rank(method="first"), q=4, labels=[1, 2, 3, 4])
+            rfm["M_Score"] = pd.qcut(rfm["Monetary"].rank(method="first"), q=4, labels=[1, 2, 3, 4])
+        except ValueError:
+            rfm["R_Score"] = 1
+            rfm["F_Score"] = 1
+            rfm["M_Score"] = 1
+
+        rfm["RFM_Score"] = (
+            rfm["R_Score"].astype(int) + rfm["F_Score"].astype(int) + rfm["M_Score"].astype(int)
+        )
+
+        def segment_rfm(score):
+            if score >= 10:
+                return "Champions"
+            elif score >= 8:
+                return "Loyal Customers"
+            elif score >= 6:
+                return "Potential Loyalists"
+            elif score >= 4:
+                return "At Risk"
+            else:
+                return "Lost"
+
+        rfm["Segment"] = rfm["RFM_Score"].apply(segment_rfm)
+        df = df.merge(rfm, on="CustomerID", how="left")
+    else:
+        df["Recency"] = 0
+        df["Frequency"] = 1
+        df["Monetary"] = df["TotalPrice"]
+        df["R_Score"] = 1
+        df["F_Score"] = 1
+        df["M_Score"] = 1
+        df["RFM_Score"] = 3
+        df["Segment"] = "Unknown"
+
+    return df
+
+
+def preprocess_generic(df: pd.DataFrame) -> pd.DataFrame:
+    """Generic preprocessing for any tabular dataset.
+
+    Handles: missing values, date parsing, numeric column detection,
+    categorical encoding prep. Does NOT assume Online Retail columns.
+    """
+    df = df.copy()
+
+    # Drop fully empty rows and columns
+    df = df.dropna(how="all").dropna(axis=1, how="all")
+
+    # Parse datetime columns
+    for col in df.columns:
+        if df[col].dtype == object:
+            try:
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                if parsed.notna().sum() > len(df) * 0.5:
+                    df[col] = parsed
+            except Exception:
+                pass
+
+    # Fill numeric missing with median
+    num_cols = df.select_dtypes(include=["float64", "int64"]).columns
+    for col in num_cols:
+        if df[col].isnull().sum() > 0:
+            df[col].fillna(df[col].median(), inplace=True)
+
+    # Fill categorical missing with mode
+    cat_cols = df.select_dtypes(include=["object"]).columns
+    for col in cat_cols:
+        if df[col].isnull().sum() > 0:
+            mode_vals = df[col].mode()
+            if len(mode_vals) > 0:
+                df[col].fillna(mode_vals[0], inplace=True)
+            else:
+                df[col].fillna("Unknown", inplace=True)
+
+    # Add fake Online Retail compatible columns for downstream compatibility
+    if "TotalPrice" not in df.columns:
+        # Use the first numeric column as TotalPrice
+        if len(num_cols) > 0:
+            df["TotalPrice"] = df[num_cols[0]]
+        else:
+            df["TotalPrice"] = 1
+
+    if "InvoiceDate" not in df.columns:
+        date_cols = df.select_dtypes(include=["datetime64"]).columns
+        if len(date_cols) > 0:
+            df["InvoiceDate"] = df[date_cols[0]]
+        else:
+            df["InvoiceDate"] = pd.Timestamp.now()
+
+    if "IsCancelled" not in df.columns:
+        df["IsCancelled"] = False
+
+    if "CustomerID" not in df.columns:
+        # Use first column as fake customer ID
+        df["CustomerID"] = range(1, len(df) + 1)
+
+    if "InvoiceNo" not in df.columns:
+        df["InvoiceNo"] = range(1, len(df) + 1)
+
+    if "Country" not in df.columns:
+        df["Country"] = "Unknown"
+
+    if "Description" not in df.columns:
+        df["Description"] = "Item-" + df.index.astype(str)
+
+    if "StockCode" not in df.columns:
+        df["StockCode"] = "SKU-" + df.index.astype(str)
+
+    # Date features
+    df["Year"] = df["InvoiceDate"].dt.year
+    df["Month"] = df["InvoiceDate"].dt.month
+    df["Day"] = df["InvoiceDate"].dt.day
+    df["Hour"] = df["InvoiceDate"].dt.hour
+    df["Weekday"] = df["InvoiceDate"].dt.weekday
+    df["WeekdayName"] = df["InvoiceDate"].dt.day_name()
+    df["YearMonth"] = df["InvoiceDate"].dt.to_period("M").astype(str)
+
+    # RFM
+    df["Recency"] = 0
+    df["Frequency"] = 1
+    df["Monetary"] = df["TotalPrice"]
+    df["R_Score"] = 1
+    df["F_Score"] = 1
+    df["M_Score"] = 1
+    df["RFM_Score"] = 3
+    df["Segment"] = "通用数据"
 
     return df
 

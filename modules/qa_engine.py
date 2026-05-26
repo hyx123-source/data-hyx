@@ -252,7 +252,7 @@ def _keyword_search(query, df):
         return {"intent": "keyword_search", "chart_type": "bar", "data": data,
                 "answer": f"搜索 '{query}' 找到 {len(data)} 个相关产品：", "matched": True, "source": "keyword"}
     return {"intent": "unknown", "chart_type": None, "data": pd.DataFrame(),
-            "answer": f"抱歉，没有理解「{query}」。\n\n你可以尝试：\n- 卖得最好的产品\n- 月度销售趋势\n- 客户分层分析\n- 国家排名\n- 购物篮关联分析",
+            "answer": f"我暂时无法理解「{query}」。\n\n你可以尝试：\n- 数据分析类：卖得最好的产品、月度销售趋势、客户分层\n- 电商咨询类：如何提升复购率？RFM模型怎么用？\n- 任意问题：无限制，尽管问！\n\n💡 设置 DEEPSEEK_API_KEY 可启用 AI 智能回答。",
             "matched": False, "source": "fallback"}
 
 
@@ -261,18 +261,22 @@ def _keyword_search(query, df):
 # ================================================================
 
 def _build_data_context(df, rfm_df=None):
-    lines = [
-        f"Rows: {len(df):,}",
-        f"Columns: {', '.join(df.columns.tolist())}",
-        f"Date range: {df['InvoiceDate'].min()} to {df['InvoiceDate'].max()}",
-        f"Total revenue: {df['TotalPrice'].sum():,.2f}",
-        f"Unique products: {df['StockCode'].nunique()}",
-        f"Unique customers: {df['CustomerID'].nunique()}",
-        f"Countries: {', '.join(df['Country'].value_counts().head(6).index.tolist())}",
-    ]
-    top5 = df.groupby("Description")["TotalPrice"].sum().sort_values(ascending=False).head(5)
-    lines.append("Top 5 products: " + ", ".join(f"{p} ({v:,.0f})" for p, v in top5.items()))
-    if rfm_df is not None:
+    lines = [f"Rows: {len(df):,}", f"Columns: {', '.join(df.columns.tolist())}"]
+    if "InvoiceDate" in df.columns:
+        lines.append(f"Date range: {df['InvoiceDate'].min()} to {df['InvoiceDate'].max()}")
+    if "TotalPrice" in df.columns:
+        lines.append(f"Total revenue: {df['TotalPrice'].sum():,.2f}")
+    if "StockCode" in df.columns:
+        lines.append(f"Unique products: {df['StockCode'].nunique()}")
+    if "CustomerID" in df.columns:
+        lines.append(f"Unique customers: {df['CustomerID'].nunique()}")
+    if "Country" in df.columns:
+        top_countries = df["Country"].value_counts().head(6).index.tolist()
+        lines.append(f"Countries: {', '.join(top_countries)}")
+    if "Description" in df.columns:
+        top5 = df.groupby("Description")["TotalPrice"].sum().sort_values(ascending=False).head(5)
+        lines.append("Top 5 products: " + ", ".join(f"{p} ({v:,.0f})" for p, v in top5.items()))
+    if rfm_df is not None and "Segment" in rfm_df.columns:
         segs = rfm_df["Segment"].value_counts().to_dict()
         lines.append("Customer segments: " + ", ".join(f"{k}: {v}" for k, v in segs.items()))
     return "\n".join(lines)
@@ -285,20 +289,29 @@ def _llm_query(query, df, rfm_df=None):
     context = _build_data_context(df, rfm_df)
     intents = "top_products, bottom_products, top_countries, country_ranking, country_detail, monthly_trend, recent_period, hourly_pattern, weekday_pattern, rfm_segments, rfm_champions, rfm_atrisk, customer_count, search_product, basket_association, total_revenue, avg_order_value, return_analysis, overview, general_qa"
 
-    system = f"""You are a data analyst. Answer questions about this e-commerce dataset.
+    system = f"""You are an intelligent data analyst and AI assistant specializing in e-commerce analytics. You can answer ANY question the user asks — not limited to data queries.
 
-Data context:
+Data context (current e-commerce dataset):
 {context}
 
-Available intents: {intents}
+Core capabilities:
+- Data analysis: trends, rankings, segments, correlations, search
+- General conversation: chat, explain concepts, give advice, answer questions
+- E-commerce expertise: retail metrics, customer behavior, marketing strategy
 
 Reply with ONLY a JSON object:
-{{"intent": "<intent>", "parameters": {{}}, "answer": "<Chinese answer>", "chart_type": "<bar|line|pie|scatter|map|null>"}}
+{{"intent": "<intent>", "parameters": {{}}, "answer": "<detailed Chinese answer>", "chart_type": "<bar|line|pie|scatter|map|null>"}}
 
-For "search_product" add "keyword" in parameters.
-For "top_products" add "n" (default 10).
-For "general_qa" answer conversationally, no chart.
-Keep answers short and data-driven."""
+Data intents: top_products, bottom_products, top_countries, country_ranking, country_detail, monthly_trend, recent_period, hourly_pattern, weekday_pattern, rfm_segments, rfm_champions, rfm_atrisk, customer_count, search_product, basket_association, total_revenue, avg_order_value, return_analysis, overview
+Use intent "general_qa" for any non-data question (conversation, advice, explanations, general knowledge, etc.)
+
+Rules:
+- For "search_product" add "keyword" in parameters
+- For "top_products" add "n" (default 10)
+- For "general_qa": answer helpfully in Chinese, chart_type MUST be null
+- Always answer in Chinese. Be helpful, friendly, and data-driven when possible.
+- If the question is unrelated to the dataset, answer it conversationally (general_qa) — do NOT refuse.
+- If the question relates to e-commerce but the data can't answer it directly, give your best advice as an AI."""
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
     resp = client.chat.completions.create(
@@ -380,9 +393,10 @@ def get_example_questions():
         "月度销售趋势",
         "客户分层分析",
         "国家/地区排名",
-        "一周中哪天销售最好",
+        "电商数据分析中，RFM模型有什么作用？",
         "购物篮关联分析",
-        "退货率分析",
+        "如何提高客户复购率？",
         "搜索 WHITE HANGING HEART",
         "帮我分析一下哪个国家的客户最值钱",
+        "介绍一下电商常用的数据分析方法",
     ]
