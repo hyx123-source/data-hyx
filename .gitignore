@@ -1,0 +1,30 @@
+# Virtual environment
+hyx-final-project/
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Office temp files
+~$*
+
+# Runtime generated
+*.db
+
+# Streamlit
+.streamlit/secrets.toml
