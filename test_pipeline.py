@@ -1,4 +1,5 @@
-"""Integration test: verify all 5 modules work end-to-end."""
+"""Integration test: verify all 5 modules work end-to-end.
+Source: Student + AI collaboration."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

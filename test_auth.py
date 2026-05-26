@@ -1,4 +1,5 @@
-"""Test auth + QA integration."""
+"""Test auth + QA integration.
+Source: Student + AI collaboration."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

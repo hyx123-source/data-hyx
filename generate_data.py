@@ -1,4 +1,5 @@
-"""Generate a synthetic Online Retail dataset for testing and demo."""
+"""Generate a synthetic Online Retail dataset for testing and demo.
+Source: Student + AI collaboration."""
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
