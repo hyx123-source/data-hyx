@@ -23,19 +23,58 @@ def detect_encoding(file_bytes: bytes) -> str:
 
 
 def load_csv(file_bytes: bytes, encoding: str = None, **kwargs) -> pd.DataFrame:
-    """Load CSV with auto encoding detection and common delimiter sniffing."""
+    """Load CSV with auto encoding detection, delimiter sniffing, and error recovery."""
     if encoding is None:
         encoding = detect_encoding(file_bytes)
-    text = file_bytes.decode(encoding, errors="replace")
-    # Try common delimiters
-    for sep in [",", ";", "\t", "|"]:
+
+    # Try multiple encodings
+    encodings_to_try = [encoding]
+    for fallback_enc in ["utf-8", "gbk", "gb2312", "latin-1", "iso-8859-1"]:
+        if fallback_enc not in encodings_to_try:
+            encodings_to_try.append(fallback_enc)
+
+    text = None
+    used_encoding = encoding
+    for enc in encodings_to_try:
         try:
-            first_line = text.split("\n")[0]
-            if sep in first_line:
-                return pd.read_csv(StringIO(text), sep=sep, **kwargs)
+            text = file_bytes.decode(enc, errors="replace")
+            # Check if decoding produced reasonable Chinese content or minimal replacement chars
+            if text.count('�') < len(text) * 0.1:
+                used_encoding = enc
+                break
         except Exception:
             continue
-    return pd.read_csv(StringIO(text), **kwargs)
+
+    if text is None:
+        text = file_bytes.decode("utf-8", errors="replace")
+
+    # Detect delimiter from first few lines
+    delimiters = [",", ";", "\t", "|"]
+    lines_sample = "\n".join(text.split("\n")[:10])
+    best_sep = ","
+    for sep in delimiters:
+        if sep in lines_sample:
+            best_sep = sep
+            break
+
+    # Try multiple parsing strategies
+    strategies = [
+        {"sep": best_sep, "on_bad_lines": "skip", "encoding": used_encoding},
+        {"sep": best_sep, "on_bad_lines": "warn", "encoding": used_encoding},
+        {"sep": None, "encoding": used_encoding, "engine": "python"},  # auto-detect with python engine
+        {"sep": best_sep, "encoding": used_encoding},
+    ]
+
+    last_error = None
+    for strat in strategies:
+        try:
+            kwargs_copy = {k: v for k, v in kwargs.items() if k not in strat}
+            return pd.read_csv(StringIO(text), **strat, **kwargs_copy)
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise ValueError(f"CSV 解析失败: {last_error}")
 
 
 def load_excel(file_bytes: bytes, **kwargs) -> pd.DataFrame:
