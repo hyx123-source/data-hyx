@@ -203,7 +203,7 @@ def page_main():
         )
 
         if uploaded_file is not None:
-            prev_name = st.session_state.get("uploaded_filename", "")
+            prev_name = st.session_state.get("_uploaded_filename", "")
             if prev_name != uploaded_file.name:
                 try:
                     file_bytes = uploaded_file.read()
@@ -213,11 +213,12 @@ def page_main():
                     st.session_state.preprocessed = False
                     st.session_state.df_clean = None
                     st.session_state.rfm_df = None
-                    st.session_state.uploaded_filename = uploaded_file.name
+                    st.session_state._uploaded_filename = uploaded_file.name
+                    st.session_state._active_file_name = uploaded_file.name
+                    st.session_state._prev_saved = None  # clear saved selection
+                    st.session_state.pop("saved_file_select", None)  # reset dropdown
                     st.session_state.data_source = f"上传: {uploaded_file.name}"
-                    # Save to disk for persistence
                     _save_uploaded_file(file_bytes, uploaded_file.name, user["username"])
-                    # Log the upload
                     file_size_kb = len(file_bytes) / 1024
                     auth.log_upload(user["username"], uploaded_file.name, len(df_new), len(df_new.columns), file_size_kb)
                     st.success(f"✅ 已加载并保存: {uploaded_file.name} ({len(df_new):,} 行)")
@@ -251,7 +252,8 @@ def page_main():
                             st.session_state.preprocessed = False
                             st.session_state.df_clean = None
                             st.session_state.rfm_df = None
-                            st.session_state.uploaded_filename = target["name"]
+                            st.session_state._active_file_name = target["name"]
+                            st.session_state._data_owner = target["owner"]
                             st.session_state.data_source = f"已保存: {target['name']} (来自: {target['owner']})"
                             st.session_state._prev_saved = selected_saved
                             st.success(f"✅ 已加载: {target['name']} ({len(st.session_state.df_raw):,} 行)")
@@ -285,7 +287,7 @@ def page_main():
                             st.session_state.preprocessed = False
                             st.session_state.df_clean = None
                             st.session_state.rfm_df = None
-                            st.session_state.uploaded_filename = selected_saved
+                            st.session_state._active_file_name = selected_saved
                             st.session_state.data_source = f"已保存: {selected_saved}"
                             st.session_state._prev_saved = selected_saved
                             st.success(f"✅ 已加载: {selected_saved} ({len(st.session_state.df_raw):,} 行)")
@@ -311,13 +313,14 @@ def page_main():
                     st.session_state.pop("_delete_label", None)
                     st.session_state.pop("_prev_saved", None)
                     # Reset data if the deleted file was loaded
-                    if st.session_state.get("uploaded_filename") == target["name"]:
+                    if st.session_state.get("_active_file_name") == target["name"]:
                         st.session_state.data_loaded = False
                         st.session_state.df_raw = None
                         st.session_state.df_clean = None
                         st.session_state.rfm_df = None
                         st.session_state.preprocessed = False
-                        st.session_state.pop("uploaded_filename", None)
+                        st.session_state.pop("_uploaded_filename", None)
+                        st.session_state.pop("_active_file_name", None)
                         st.session_state.pop("data_source", None)
                     st.rerun()
                 else:
