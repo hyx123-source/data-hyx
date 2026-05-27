@@ -209,7 +209,9 @@ def page_main():
                 if prev_selected != selected_saved:
                     try:
                         target = next(f for f in saved_files if f["name"] == selected_saved)
-                        st.session_state.df_raw = pd.read_csv(target["path"], encoding="utf-8")
+                        with open(target["path"], "rb") as f:
+                            file_bytes = f.read()
+                        st.session_state.df_raw = data_loader.load_file(file_bytes, selected_saved)
                         st.session_state.data_loaded = True
                         st.session_state.preprocessed = False
                         st.session_state.df_clean = None

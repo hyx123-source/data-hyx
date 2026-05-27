@@ -82,14 +82,19 @@ def remove_outliers_zscore(df: pd.DataFrame, columns: list, threshold: float = 3
 # Column name mappings for auto-detection (canonical -> common alternatives)
 COLUMN_ALIASES = {
     "CustomerID": ["customerid", "customer_id", "customer", "client_id", "clientid", "user_id", "userid"],
-    "Description": ["description", "product", "product_name", "productname", "item", "name"],
-    "Quantity": ["quantity", "qty", "amount", "units", "volume"],
-    "UnitPrice": ["unitprice", "unit_price", "price", "cost", "单价", "price_per_unit"],
-    "InvoiceNo": ["invoiceno", "invoice_no", "invoice", "order_id", "orderid", "transaction_id", "tid"],
-    "InvoiceDate": ["invoicedate", "invoice_date", "date", "datetime", "timestamp", "order_date", "time"],
-    "StockCode": ["stockcode", "stock_code", "sku", "product_id", "productid", "item_code"],
+    "Description": ["description", "product", "product_name", "productname", "item", "name",
+                     "产品", "商品", "名称", "描述", "品名"],
+    "Quantity": ["quantity", "qty", "amount", "units", "volume", "数量", "个数", "件数"],
+    "UnitPrice": ["unitprice", "unit_price", "price", "cost", "单价", "price_per_unit", "价格"],
+    "InvoiceNo": ["invoiceno", "invoice_no", "invoice", "order_id", "orderid", "transaction_id", "tid",
+                   "订单号", "流水号"],
+    "InvoiceDate": ["invoicedate", "invoice_date", "date", "datetime", "timestamp", "order_date", "time",
+                     "日期", "时间", "缴费时间", "缴纳时间"],
+    "StockCode": ["stockcode", "stock_code", "sku", "product_id", "productid", "item_code",
+                   "商品编码", "产品编号", "货号"],
     "Country": ["country", "nation", "region", "area", "国家", "地区"],
-    "TotalPrice": ["totalprice", "total_price", "revenue", "sales", "amount"],
+    "TotalPrice": ["totalprice", "total_price", "revenue", "sales", "amount",
+                    "金额", "总价", "合计", "缴纳金额", "应缴金额", "实缴金额", "团费", "缴费金额"],
 }
 
 REQUIRED_ONLINE_RETAIL = ["CustomerID", "Quantity", "UnitPrice", "InvoiceNo", "InvoiceDate"]
@@ -272,6 +277,56 @@ def preprocess_online_retail(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _find_value_column(df: pd.DataFrame) -> str:
+    """Find the most likely value/amount column for use as TotalPrice.
+
+    Strategy:
+      1. Match via TotalPrice aliases in COLUMN_ALIASES.
+      2. Highest priority: float columns with non-integer values (looks like money).
+      3. Lowest priority: integer columns that look like IDs (all unique) or
+         simple counters (sequential 1..N).  Skip those.
+      4. Fall back to the first remaining numeric column.
+    """
+    num_cols = df.select_dtypes(include=["float64", "int64"]).columns.tolist()
+    if not num_cols:
+        return None
+
+    # Strategy 1: alias match
+    for col in df.columns:
+        canonical = _normalize_column_name(col)
+        if canonical == "TotalPrice" and col in num_cols:
+            return col
+
+    # Strategy 2: float columns (look like money/amounts with decimals)
+    float_cols = df.select_dtypes(include=["float64"]).columns.tolist()
+    if float_cols:
+        return float_cols[0]
+
+    # Strategy 3: filter out ID-like int columns
+    candidates = []
+    for col in num_cols:
+        series = df[col].dropna()
+        if len(series) == 0:
+            continue
+        n_unique = series.nunique()
+        # Skip if all values are unique (looks like an ID)
+        if n_unique == len(series) and len(series) > 5:
+            continue
+        # Skip if it's a simple sequential counter 1..N
+        vals = series.sort_values().values
+        if len(vals) >= 3 and (vals == np.arange(vals[0], vals[0] + len(vals))).all():
+            # Check if it starts near 1 and steps by 1 (counter/序号-like)
+            if vals[0] <= 2 and (vals[-1] - vals[0] + 1) == len(vals) and len(vals) > 3:
+                continue
+        candidates.append(col)
+
+    if candidates:
+        return candidates[0]
+
+    # Strategy 4: fall back to first numeric
+    return num_cols[0]
+
+
 def preprocess_generic(df: pd.DataFrame) -> pd.DataFrame:
     """Generic preprocessing for any tabular dataset.
 
@@ -309,11 +364,11 @@ def preprocess_generic(df: pd.DataFrame) -> pd.DataFrame:
             else:
                 df[col].fillna("Unknown", inplace=True)
 
-    # Add fake Online Retail compatible columns for downstream compatibility
+    # Add compatible columns for downstream
     if "TotalPrice" not in df.columns:
-        # Use the first numeric column as TotalPrice
-        if len(num_cols) > 0:
-            df["TotalPrice"] = df[num_cols[0]]
+        value_col = _find_value_column(df)
+        if value_col:
+            df["TotalPrice"] = df[value_col]
         else:
             df["TotalPrice"] = 1
 
