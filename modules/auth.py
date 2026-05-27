@@ -45,6 +45,17 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS upload_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            rows_count INTEGER,
+            columns_count INTEGER,
+            file_size_kb REAL,
+            timestamp TEXT NOT NULL
+        )
+    """)
     conn.commit()
 
     # Seed default admin if not exists
@@ -193,6 +204,33 @@ def delete_user(user_id: int) -> Tuple[bool, str]:
     conn.commit()
     conn.close()
     return True, f"已删除用户 {row['username']}"
+
+
+def log_upload(username: str, filename: str, rows_count: int, columns_count: int, file_size_kb: float):
+    """Record a data upload."""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO upload_log (username, filename, rows_count, columns_count, file_size_kb, timestamp) VALUES (?,?,?,?,?,?)",
+        (username, filename, rows_count, columns_count, file_size_kb, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_upload_logs(username: str = None) -> list:
+    """Get upload logs. If username is None, get all (admin)."""
+    conn = _get_conn()
+    if username:
+        rows = conn.execute(
+            "SELECT * FROM upload_log WHERE username = ? ORDER BY timestamp DESC LIMIT 200",
+            (username,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM upload_log ORDER BY timestamp DESC LIMIT 200"
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def change_password(username: str, old_pwd: str, new_pwd: str) -> Tuple[bool, str]:

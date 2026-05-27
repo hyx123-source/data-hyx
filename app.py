@@ -188,6 +188,9 @@ def page_main():
                     st.session_state.data_source = f"上传: {uploaded_file.name}"
                     # Save to disk for persistence
                     _save_uploaded_file(file_bytes, uploaded_file.name, user["username"])
+                    # Log the upload
+                    file_size_kb = len(file_bytes) / 1024
+                    auth.log_upload(user["username"], uploaded_file.name, len(df_new), len(df_new.columns), file_size_kb)
                     st.success(f"✅ 已加载并保存: {uploaded_file.name} ({len(df_new):,} 行)")
                 except Exception as e:
                     st.error(f"加载失败: {e}")
@@ -492,7 +495,7 @@ def page_main():
     if is_admin:
         with tabs[3]:
             st.subheader("🛡️ 管理员面板")
-            admin_tab = st.radio("管理选项", ["👥 用户管理", "📋 问答日志"], horizontal=True)
+            admin_tab = st.radio("管理选项", ["👥 用户管理", "📋 问答日志", "📁 上传记录"], horizontal=True)
 
             if admin_tab == "👥 用户管理":
                 users = auth.get_all_users()
@@ -532,6 +535,22 @@ def page_main():
                     if filter_user != "全部":
                         filtered = [l for l in logs if l["username"] == filter_user]
                         st.dataframe(pd.DataFrame(filtered)[["query", "answer", "intent", "timestamp"]].head(20), width="stretch")
+
+            elif admin_tab == "📁 上传记录":
+                uploads = auth.get_upload_logs()
+                st.metric("总上传次数", len(uploads))
+                if uploads:
+                    df_uploads = pd.DataFrame(uploads)
+                    df_uploads.columns = ["ID", "用户名", "文件名", "行数", "列数", "文件大小(KB)", "上传时间"]
+                    st.dataframe(df_uploads[["用户名", "文件名", "行数", "列数", "文件大小(KB)", "上传时间"]].head(50), width="stretch")
+
+                    usernames_u = list(set(u["username"] for u in uploads))
+                    filter_user_u = st.selectbox("按用户筛选", ["全部"] + usernames_u, key="filter_upload")
+                    if filter_user_u != "全部":
+                        filtered_u = [u for u in uploads if u["username"] == filter_user_u]
+                        st.dataframe(pd.DataFrame(filtered_u)[["文件名", "行数", "列数", "文件大小(KB)", "上传时间"]].head(20), width="stretch")
+                else:
+                    st.info("暂无上传记录")
 
 
 # ================================================================
