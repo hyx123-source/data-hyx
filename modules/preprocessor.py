@@ -229,6 +229,11 @@ def preprocess_online_retail(df: pd.DataFrame) -> pd.DataFrame:
         df["UnitPrice"] = df["TotalPrice"] / df["Quantity"].replace(0, 1)
 
     # 6. Compute RFM (only if CustomerID exists)
+    # Drop pre-existing RFM columns to avoid merge column conflicts when re-processing
+    for _rfm_col in ["Recency", "Frequency", "Monetary", "R_Score", "F_Score", "M_Score", "RFM_Score", "Segment"]:
+        if _rfm_col in df.columns:
+            df = df.drop(columns=[_rfm_col])
+
     if "CustomerID" in df.columns:
         reference_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
         rfm = df.groupby("CustomerID").agg(

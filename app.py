@@ -422,6 +422,10 @@ def page_main():
                     merged_df = preprocessor.preprocess_generic(merged_df)
                     merge_name = "合并 (" + " + ".join(merged_names) + ")"
                     _register_dataset(merge_name, merged_df, f"合并: {merge_name}")
+                    # Mark as preprocessed to avoid re-processing already-processed data
+                    _ds_set("df_clean", merged_df)
+                    _ds_set("rfm_df", preprocessor.get_rfm_table(merged_df))
+                    _ds_set("preprocessed", True)
                     st.success(f"✅ 已创建合并数据集: {merge_name} ({len(merged_df):,} 行)")
                     st.rerun()
 
