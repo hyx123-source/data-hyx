@@ -68,6 +68,26 @@ def _get_saved_files(username: str) -> list:
     return sorted(files, key=lambda x: x["name"])
 
 
+def _get_all_saved_files() -> list:
+    """Return all saved files from all users (for admin)."""
+    base = os.path.join(os.path.dirname(__file__), "data", "uploads")
+    if not os.path.exists(base):
+        return []
+    all_files = []
+    for username in os.listdir(base):
+        user_dir = os.path.join(base, username)
+        if not os.path.isdir(user_dir):
+            continue
+        for fname in os.listdir(user_dir):
+            if fname.endswith((".csv", ".xlsx", ".xls", ".json")):
+                all_files.append({
+                    "name": fname,
+                    "path": os.path.join(user_dir, fname),
+                    "owner": username,
+                })
+    return sorted(all_files, key=lambda x: (x["name"], x["owner"]))
+
+
 # ================================================================
 # LOGIN PAGE
 # ================================================================
@@ -196,33 +216,68 @@ def page_main():
                     st.error(f"加载失败: {e}")
 
         # ---- Load previously saved file ----
-        saved_files = _get_saved_files(user["username"])
-        if saved_files:
-            saved_names = [f["name"] for f in saved_files]
-            selected_saved = st.selectbox(
-                "或选择已保存的数据",
-                ["— 不选择 —"] + saved_names,
-                key="saved_file_select",
-            )
-            if selected_saved != "— 不选择 —":
-                prev_selected = st.session_state.get("_prev_saved", "")
-                if prev_selected != selected_saved:
-                    try:
-                        target = next(f for f in saved_files if f["name"] == selected_saved)
-                        with open(target["path"], "rb") as f:
-                            file_bytes = f.read()
-                        st.session_state.df_raw = data_loader.load_file(file_bytes, selected_saved)
-                        st.session_state.data_loaded = True
-                        st.session_state.preprocessed = False
-                        st.session_state.df_clean = None
-                        st.session_state.rfm_df = None
-                        st.session_state.uploaded_filename = selected_saved
-                        st.session_state.data_source = f"已保存: {selected_saved}"
-                        st.session_state._prev_saved = selected_saved
-                        st.success(f"✅ 已加载: {selected_saved} ({len(st.session_state.df_raw):,} 行)")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"加载失败: {e}")
+        if is_admin:
+            saved_files = _get_all_saved_files()
+            if saved_files:
+                # Build labels with owner info
+                display_names = [f"{'— 不选择 —'}"]
+                name_to_file = {}
+                for f in saved_files:
+                    label = f"{f['name']}  [{f['owner']}]"
+                    display_names.append(label)
+                    name_to_file[label] = f
+                selected_saved = st.selectbox(
+                    "或选择已保存的数据（全部用户）",
+                    display_names,
+                    key="saved_file_select",
+                )
+                if selected_saved != "— 不选择 —":
+                    prev_selected = st.session_state.get("_prev_saved", "")
+                    if prev_selected != selected_saved:
+                        try:
+                            target = name_to_file[selected_saved]
+                            with open(target["path"], "rb") as f:
+                                file_bytes = f.read()
+                            st.session_state.df_raw = data_loader.load_file(file_bytes, target["name"])
+                            st.session_state.data_loaded = True
+                            st.session_state.preprocessed = False
+                            st.session_state.df_clean = None
+                            st.session_state.rfm_df = None
+                            st.session_state.uploaded_filename = target["name"]
+                            st.session_state.data_source = f"已保存: {target['name']} (来自: {target['owner']})"
+                            st.session_state._prev_saved = selected_saved
+                            st.success(f"✅ 已加载: {target['name']} ({len(st.session_state.df_raw):,} 行)")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"加载失败: {e}")
+        else:
+            saved_files = _get_saved_files(user["username"])
+            if saved_files:
+                saved_names = [f["name"] for f in saved_files]
+                selected_saved = st.selectbox(
+                    "或选择已保存的数据",
+                    ["— 不选择 —"] + saved_names,
+                    key="saved_file_select",
+                )
+                if selected_saved != "— 不选择 —":
+                    prev_selected = st.session_state.get("_prev_saved", "")
+                    if prev_selected != selected_saved:
+                        try:
+                            target = next(f for f in saved_files if f["name"] == selected_saved)
+                            with open(target["path"], "rb") as f:
+                                file_bytes = f.read()
+                            st.session_state.df_raw = data_loader.load_file(file_bytes, selected_saved)
+                            st.session_state.data_loaded = True
+                            st.session_state.preprocessed = False
+                            st.session_state.df_clean = None
+                            st.session_state.rfm_df = None
+                            st.session_state.uploaded_filename = selected_saved
+                            st.session_state.data_source = f"已保存: {selected_saved}"
+                            st.session_state._prev_saved = selected_saved
+                            st.success(f"✅ 已加载: {selected_saved} ({len(st.session_state.df_raw):,} 行)")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"加载失败: {e}")
 
         if not uploaded_file and not saved_files:
             # Auto-load default dataset if nothing uploaded
