@@ -36,6 +36,39 @@ for key, default in [
 
 
 # ================================================================
+# Helper: save & load uploaded files
+# ================================================================
+def _get_upload_dir(username: str) -> str:
+    upload_dir = os.path.join(os.path.dirname(__file__), "data", "uploads", username)
+    os.makedirs(upload_dir, exist_ok=True)
+    return upload_dir
+
+
+def _save_uploaded_file(file_bytes: bytes, filename: str, username: str):
+    try:
+        upload_dir = _get_upload_dir(username)
+        save_path = os.path.join(upload_dir, filename)
+        with open(save_path, "wb") as f:
+            f.write(file_bytes)
+    except Exception:
+        pass
+
+
+def _get_saved_files(username: str) -> list:
+    upload_dir = _get_upload_dir(username)
+    if not os.path.exists(upload_dir):
+        return []
+    files = []
+    for fname in os.listdir(upload_dir):
+        if fname.endswith((".csv", ".xlsx", ".xls", ".json")):
+            files.append({
+                "name": fname,
+                "path": os.path.join(upload_dir, fname),
+            })
+    return sorted(files, key=lambda x: x["name"])
+
+
+# ================================================================
 # LOGIN PAGE
 # ================================================================
 def page_login():
@@ -133,6 +166,7 @@ def page_main():
             source = st.session_state.get("data_source", "默认数据集")
             st.caption(f"📌 当前: {source}")
 
+        # ---- Upload new file ----
         uploaded_file = st.file_uploader(
             "上传数据文件 (CSV/Excel/JSON)",
             type=["csv", "xlsx", "xls", "json"],
@@ -140,22 +174,52 @@ def page_main():
         )
 
         if uploaded_file is not None:
-            # Only reload if it's a different file
             prev_name = st.session_state.get("uploaded_filename", "")
             if prev_name != uploaded_file.name:
                 try:
                     file_bytes = uploaded_file.read()
-                    st.session_state.df_raw = data_loader.load_file(file_bytes, uploaded_file.name)
+                    df_new = data_loader.load_file(file_bytes, uploaded_file.name)
+                    st.session_state.df_raw = df_new
                     st.session_state.data_loaded = True
                     st.session_state.preprocessed = False
                     st.session_state.df_clean = None
                     st.session_state.rfm_df = None
                     st.session_state.uploaded_filename = uploaded_file.name
                     st.session_state.data_source = f"上传: {uploaded_file.name}"
-                    st.success(f"✅ 已加载: {uploaded_file.name} ({len(st.session_state.df_raw):,} 行)")
+                    # Save to disk for persistence
+                    _save_uploaded_file(file_bytes, uploaded_file.name, user["username"])
+                    st.success(f"✅ 已加载并保存: {uploaded_file.name} ({len(df_new):,} 行)")
                 except Exception as e:
                     st.error(f"加载失败: {e}")
-        else:
+
+        # ---- Load previously saved file ----
+        saved_files = _get_saved_files(user["username"])
+        if saved_files:
+            saved_names = [f["name"] for f in saved_files]
+            selected_saved = st.selectbox(
+                "或选择已保存的数据",
+                ["— 不选择 —"] + saved_names,
+                key="saved_file_select",
+            )
+            if selected_saved != "— 不选择 —":
+                prev_selected = st.session_state.get("_prev_saved", "")
+                if prev_selected != selected_saved:
+                    try:
+                        target = next(f for f in saved_files if f["name"] == selected_saved)
+                        st.session_state.df_raw = pd.read_csv(target["path"], encoding="utf-8")
+                        st.session_state.data_loaded = True
+                        st.session_state.preprocessed = False
+                        st.session_state.df_clean = None
+                        st.session_state.rfm_df = None
+                        st.session_state.uploaded_filename = selected_saved
+                        st.session_state.data_source = f"已保存: {selected_saved}"
+                        st.session_state._prev_saved = selected_saved
+                        st.success(f"✅ 已加载: {selected_saved} ({len(st.session_state.df_raw):,} 行)")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"加载失败: {e}")
+
+        if not uploaded_file and not saved_files:
             # Auto-load default dataset if nothing uploaded
             default_path = os.path.join(os.path.dirname(__file__), "data", "online_retail.csv")
             if os.path.exists(default_path) and not st.session_state.data_loaded:
