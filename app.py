@@ -68,6 +68,15 @@ def _get_saved_files(username: str) -> list:
     return sorted(files, key=lambda x: x["name"])
 
 
+def _delete_saved_file(file_path: str) -> bool:
+    """Delete a saved file from disk. Returns True on success."""
+    try:
+        os.remove(file_path)
+        return True
+    except Exception:
+        return False
+
+
 def _get_all_saved_files() -> list:
     """Return all saved files from all users (for admin)."""
     base = os.path.join(os.path.dirname(__file__), "data", "uploads")
@@ -219,7 +228,6 @@ def page_main():
         if is_admin:
             saved_files = _get_all_saved_files()
             if saved_files:
-                # Build labels with owner info
                 display_names = [f"{'— 不选择 —'}"]
                 name_to_file = {}
                 for f in saved_files:
@@ -250,6 +258,12 @@ def page_main():
                             st.rerun()
                         except Exception as e:
                             st.error(f"加载失败: {e}")
+                    # Delete button for selected file
+                    target = name_to_file[selected_saved]
+                    if st.button(f"🗑️ 删除 {target['name']}", key=f"del_{target['path']}"):
+                        st.session_state._delete_target = target
+                        st.session_state._delete_label = selected_saved
+                        st.rerun()
         else:
             saved_files = _get_saved_files(user["username"])
             if saved_files:
@@ -278,6 +292,40 @@ def page_main():
                             st.rerun()
                         except Exception as e:
                             st.error(f"加载失败: {e}")
+                    # Delete button for selected file
+                    target = next(f for f in saved_files if f["name"] == selected_saved)
+                    if st.button(f"🗑️ 删除 {target['name']}", key=f"del_{target['path']}"):
+                        st.session_state._delete_target = target
+                        st.session_state._delete_label = selected_saved
+                        st.rerun()
+
+        # ---- Delete confirmation ----
+        if st.session_state.get("_delete_target"):
+            target = st.session_state._delete_target
+            st.warning(f"⚠️ 确认删除 **{target['name']}**？此操作不可撤销。")
+            c1, c2 = st.columns(2)
+            if c1.button("✅ 确认删除", key="confirm_del"):
+                if _delete_saved_file(target["path"]):
+                    st.success(f"已删除: {target['name']}")
+                    st.session_state.pop("_delete_target", None)
+                    st.session_state.pop("_delete_label", None)
+                    st.session_state.pop("_prev_saved", None)
+                    # Reset data if the deleted file was loaded
+                    if st.session_state.get("uploaded_filename") == target["name"]:
+                        st.session_state.data_loaded = False
+                        st.session_state.df_raw = None
+                        st.session_state.df_clean = None
+                        st.session_state.rfm_df = None
+                        st.session_state.preprocessed = False
+                        st.session_state.pop("uploaded_filename", None)
+                        st.session_state.pop("data_source", None)
+                    st.rerun()
+                else:
+                    st.error("删除失败，请检查文件权限")
+            if c2.button("❌ 取消", key="cancel_del"):
+                st.session_state.pop("_delete_target", None)
+                st.session_state.pop("_delete_label", None)
+                st.rerun()
 
         if not uploaded_file and not saved_files:
             # Auto-load default dataset if nothing uploaded
