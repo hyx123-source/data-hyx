@@ -28,11 +28,67 @@ auth.init_db()
 # ---- Session state ----
 for key, default in [
     ("authenticated", False), ("user", None), ("page", "login"),
-    ("df_raw", None), ("df_clean", None), ("rfm_df", None),
-    ("preprocessed", False), ("data_loaded", False), ("chat_history", []),
+    ("_datasets", {}), ("_active_dataset", None), ("_dataset_order", []),
+    ("chat_history", []),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+def _ds_get(key, default=None):
+    """Get a value from the active dataset."""
+    name = st.session_state.get("_active_dataset")
+    if name and name in st.session_state.get("_datasets", {}):
+        return st.session_state._datasets[name].get(key, default)
+    return default
+
+
+def _ds_set(key, value):
+    """Set a value on the active dataset."""
+    name = st.session_state.get("_active_dataset")
+    if name and name in st.session_state.get("_datasets", {}):
+        st.session_state._datasets[name][key] = value
+
+
+def _register_dataset(ds_name: str, df_raw: pd.DataFrame, source: str):
+    """Add a dataset to the registry and make it active. Deduplicate name."""
+    datasets = st.session_state._datasets
+    order = st.session_state._dataset_order
+    # Deduplicate name
+    base = ds_name
+    counter = 1
+    while ds_name in datasets:
+        counter += 1
+        dot_pos = base.rfind(".")
+        if dot_pos > 0:
+            ds_name = f"{base[:dot_pos]} ({counter}){base[dot_pos:]}"
+        else:
+            ds_name = f"{base} ({counter})"
+    datasets[ds_name] = {
+        "df_raw": df_raw,
+        "df_clean": None,
+        "rfm_df": None,
+        "preprocessed": False,
+        "data_source": source,
+    }
+    order.append(ds_name)
+    st.session_state._active_dataset = ds_name
+
+
+def _remove_dataset(ds_name: str):
+    """Remove a dataset from the registry."""
+    datasets = st.session_state._datasets
+    order = st.session_state._dataset_order
+    if ds_name in datasets:
+        del datasets[ds_name]
+    if ds_name in order:
+        order.remove(ds_name)
+    # Switch active to the next available
+    if st.session_state._active_dataset == ds_name:
+        if order:
+            st.session_state._active_dataset = order[-1]
+        else:
+            st.session_state._active_dataset = None
 
 
 # ================================================================
@@ -190,11 +246,6 @@ def page_main():
         # Module 1: Data loading
         st.subheader("📁 数据加载")
 
-        # Show current data source
-        if st.session_state.data_loaded:
-            source = st.session_state.get("data_source", "默认数据集")
-            st.caption(f"📌 当前: {source}")
-
         # ---- Upload new file ----
         uploaded_file = st.file_uploader(
             "上传数据文件 (CSV/Excel/JSON)",
@@ -208,16 +259,10 @@ def page_main():
                 try:
                     file_bytes = uploaded_file.read()
                     df_new = data_loader.load_file(file_bytes, uploaded_file.name)
-                    st.session_state.df_raw = df_new
-                    st.session_state.data_loaded = True
-                    st.session_state.preprocessed = False
-                    st.session_state.df_clean = None
-                    st.session_state.rfm_df = None
+                    _register_dataset(uploaded_file.name, df_new, f"上传: {uploaded_file.name}")
                     st.session_state._uploaded_filename = uploaded_file.name
-                    st.session_state._active_file_name = uploaded_file.name
-                    st.session_state._prev_saved = None  # clear saved selection
-                    st.session_state.pop("saved_file_select", None)  # reset dropdown
-                    st.session_state.data_source = f"上传: {uploaded_file.name}"
+                    st.session_state._prev_saved = None
+                    st.session_state.pop("saved_file_select", None)
                     _save_uploaded_file(file_bytes, uploaded_file.name, user["username"])
                     file_size_kb = len(file_bytes) / 1024
                     auth.log_upload(user["username"], uploaded_file.name, len(df_new), len(df_new.columns), file_size_kb)
@@ -229,14 +274,14 @@ def page_main():
         if is_admin:
             saved_files = _get_all_saved_files()
             if saved_files:
-                display_names = [f"{'— 不选择 —'}"]
+                display_names = ["— 不选择 —"]
                 name_to_file = {}
                 for f in saved_files:
                     label = f"{f['name']}  [{f['owner']}]"
                     display_names.append(label)
                     name_to_file[label] = f
                 selected_saved = st.selectbox(
-                    "或选择已保存的数据（全部用户）",
+                    "从已保存文件中添加（全部用户）",
                     display_names,
                     key="saved_file_select",
                 )
@@ -247,31 +292,25 @@ def page_main():
                             target = name_to_file[selected_saved]
                             with open(target["path"], "rb") as f:
                                 file_bytes = f.read()
-                            st.session_state.df_raw = data_loader.load_file(file_bytes, target["name"])
-                            st.session_state.data_loaded = True
-                            st.session_state.preprocessed = False
-                            st.session_state.df_clean = None
-                            st.session_state.rfm_df = None
-                            st.session_state._active_file_name = target["name"]
-                            st.session_state._data_owner = target["owner"]
-                            st.session_state.data_source = f"已保存: {target['name']} (来自: {target['owner']})"
+                            df_new = data_loader.load_file(file_bytes, target["name"])
+                            _register_dataset(target["name"], df_new,
+                                              f"已保存: {target['name']} (来自: {target['owner']})")
                             st.session_state._prev_saved = selected_saved
-                            st.success(f"✅ 已加载: {target['name']} ({len(st.session_state.df_raw):,} 行)")
+                            st.success(f"✅ 已加载: {target['name']} ({len(df_new):,} 行)")
                             st.rerun()
                         except Exception as e:
                             st.error(f"加载失败: {e}")
-                    # Delete button for selected file
+                    # Delete from disk button
                     target = name_to_file[selected_saved]
-                    if st.button(f"🗑️ 删除 {target['name']}", key=f"del_{target['path']}"):
-                        st.session_state._delete_target = target
-                        st.session_state._delete_label = selected_saved
+                    if st.button(f"🗑️ 从磁盘删除 {target['name']}", key=f"del_{target['path']}"):
+                        st.session_state._disk_delete_target = target
                         st.rerun()
         else:
             saved_files = _get_saved_files(user["username"])
             if saved_files:
                 saved_names = [f["name"] for f in saved_files]
                 selected_saved = st.selectbox(
-                    "或选择已保存的数据",
+                    "从已保存文件中添加",
                     ["— 不选择 —"] + saved_names,
                     key="saved_file_select",
                 )
@@ -282,106 +321,122 @@ def page_main():
                             target = next(f for f in saved_files if f["name"] == selected_saved)
                             with open(target["path"], "rb") as f:
                                 file_bytes = f.read()
-                            st.session_state.df_raw = data_loader.load_file(file_bytes, selected_saved)
-                            st.session_state.data_loaded = True
-                            st.session_state.preprocessed = False
-                            st.session_state.df_clean = None
-                            st.session_state.rfm_df = None
-                            st.session_state._active_file_name = selected_saved
-                            st.session_state.data_source = f"已保存: {selected_saved}"
+                            df_new = data_loader.load_file(file_bytes, selected_saved)
+                            _register_dataset(selected_saved, df_new, f"已保存: {selected_saved}")
                             st.session_state._prev_saved = selected_saved
-                            st.success(f"✅ 已加载: {selected_saved} ({len(st.session_state.df_raw):,} 行)")
+                            st.success(f"✅ 已加载: {selected_saved} ({len(df_new):,} 行)")
                             st.rerun()
                         except Exception as e:
                             st.error(f"加载失败: {e}")
-                    # Delete button for selected file
+                    # Delete from disk button
                     target = next(f for f in saved_files if f["name"] == selected_saved)
-                    if st.button(f"🗑️ 删除 {target['name']}", key=f"del_{target['path']}"):
-                        st.session_state._delete_target = target
-                        st.session_state._delete_label = selected_saved
+                    if st.button(f"🗑️ 从磁盘删除 {target['name']}", key=f"del_{target['path']}"):
+                        st.session_state._disk_delete_target = target
                         st.rerun()
 
-        # ---- Delete confirmation ----
-        if st.session_state.get("_delete_target"):
-            target = st.session_state._delete_target
-            st.warning(f"⚠️ 确认删除 **{target['name']}**？此操作不可撤销。")
+        # ---- Disk file delete confirmation ----
+        if st.session_state.get("_disk_delete_target"):
+            target = st.session_state._disk_delete_target
+            st.warning(f"⚠️ 从磁盘永久删除 **{target['name']}**？")
             c1, c2 = st.columns(2)
-            if c1.button("✅ 确认删除", key="confirm_del"):
+            if c1.button("✅ 确认删除", key="confirm_disk_del"):
                 if _delete_saved_file(target["path"]):
-                    st.success(f"已删除: {target['name']}")
-                    st.session_state.pop("_delete_target", None)
-                    st.session_state.pop("_delete_label", None)
+                    st.success(f"已删除文件: {target['name']}")
+                    # Also remove from loaded datasets
+                    _remove_dataset(target["name"])
+                    st.session_state.pop("_disk_delete_target", None)
                     st.session_state.pop("_prev_saved", None)
-                    # Reset data if the deleted file was loaded
-                    if st.session_state.get("_active_file_name") == target["name"]:
-                        st.session_state.data_loaded = False
-                        st.session_state.df_raw = None
-                        st.session_state.df_clean = None
-                        st.session_state.rfm_df = None
-                        st.session_state.preprocessed = False
-                        st.session_state.pop("_uploaded_filename", None)
-                        st.session_state.pop("_active_file_name", None)
-                        st.session_state.pop("data_source", None)
                     st.rerun()
                 else:
-                    st.error("删除失败，请检查文件权限")
-            if c2.button("❌ 取消", key="cancel_del"):
-                st.session_state.pop("_delete_target", None)
-                st.session_state.pop("_delete_label", None)
+                    st.error("删除失败")
+            if c2.button("❌ 取消", key="cancel_disk_del"):
+                st.session_state.pop("_disk_delete_target", None)
                 st.rerun()
 
-        if not uploaded_file and not saved_files:
-            # Auto-load default dataset if nothing uploaded
+        # ---- Auto-load default if nothing loaded ----
+        if len(st.session_state._datasets) == 0 and not uploaded_file:
             default_path = os.path.join(os.path.dirname(__file__), "data", "online_retail.csv")
-            if os.path.exists(default_path) and not st.session_state.data_loaded:
-                try:
-                    st.session_state.df_raw = pd.read_csv(default_path, encoding="utf-8")
-                    st.session_state.data_loaded = True
-                    st.session_state.data_source = "默认: online_retail.csv"
-                    st.info("📦 已自动加载默认数据集")
-                except Exception:
-                    st.warning("默认数据集不可用，请上传文件。")
+            if os.path.exists(default_path):
+                if "_default_loaded" not in st.session_state:
+                    try:
+                        df = pd.read_csv(default_path, encoding="utf-8")
+                        _register_dataset("online_retail.csv", df, "默认: online_retail.csv")
+                        st.session_state._default_loaded = True
+                        st.info("📦 已自动加载默认数据集")
+                    except Exception:
+                        st.warning("默认数据集不可用，请上传文件。")
 
         st.divider()
 
-        # Module 2: Preprocessing
+        # ---- Loaded datasets list ----
+        st.subheader("📂 已加载数据集")
+        datasets = st.session_state._datasets
+        if datasets:
+            active = st.session_state._active_dataset
+            for ds_name in list(st.session_state._dataset_order):
+                if ds_name not in datasets:
+                    continue
+                ds = datasets[ds_name]
+                is_active = (ds_name == active)
+                label = f"{'🔵 ' if is_active else '⚪ '}{ds_name}"
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    if st.button(label, key=f"switch_{ds_name}", width="stretch",
+                                 help=f"切换到此数据集 ({len(ds['df_raw']):,} 行)",
+                                 type="primary" if is_active else "secondary"):
+                        st.session_state._active_dataset = ds_name
+                        st.rerun()
+                with col2:
+                    if st.button("✕", key=f"remove_{ds_name}", help=f"移除 {ds_name}"):
+                        _remove_dataset(ds_name)
+                        st.rerun()
+                if is_active:
+                    st.caption(f"   📌 {ds['data_source']} | {len(ds['df_raw']):,} 行 × {len(ds['df_raw'].columns)} 列")
+        else:
+            st.caption("暂无数据集，请上传或选择已保存的文件")
+
+        st.divider()
+
+        # Module 2: Preprocessing (for active dataset)
         st.subheader("🔧 数据预处理")
-        if st.session_state.data_loaded:
+        if _ds_get("df_raw") is not None:
             col_a, col_b = st.columns([3, 1])
+            ds_name = st.session_state._active_dataset
             with col_a:
-                if st.button("运行预处理", width="stretch"):
+                if st.button("运行预处理", width="stretch", key=f"preproc_{ds_name}"):
                     with st.spinner("处理中..."):
                         try:
-                            df = st.session_state.df_raw.copy()
+                            df = _ds_get("df_raw").copy()
                             df = preprocessor.preprocess_online_retail(df)
-                            st.session_state.df_clean = df
-                            st.session_state.rfm_df = preprocessor.get_rfm_table(df)
-                            st.session_state.preprocessed = True
+                            _ds_set("df_clean", df)
+                            _ds_set("rfm_df", preprocessor.get_rfm_table(df))
+                            _ds_set("preprocessed", True)
                         except Exception as e:
                             st.error(f"预处理出错: {e}")
-                            # Fallback to generic
                             try:
-                                df = preprocessor.preprocess_generic(st.session_state.df_raw.copy())
-                                st.session_state.df_clean = df
-                                st.session_state.rfm_df = preprocessor.get_rfm_table(df)
-                                st.session_state.preprocessed = True
+                                df = _ds_get("df_raw").copy()
+                                df = preprocessor.preprocess_generic(df)
+                                _ds_set("df_clean", df)
+                                _ds_set("rfm_df", preprocessor.get_rfm_table(df))
+                                _ds_set("preprocessed", True)
                                 st.info("已使用通用预处理")
                             except Exception as e2:
                                 st.error(f"通用预处理也失败: {e2}")
             with col_b:
-                if st.session_state.preprocessed and st.button("重置", width="stretch"):
-                    st.session_state.preprocessed = False
-                    st.session_state.df_clean = None
-                    st.session_state.rfm_df = None
+                if _ds_get("preprocessed") and st.button("重置", width="stretch", key=f"reset_{ds_name}"):
+                    _ds_set("preprocessed", False)
+                    _ds_set("df_clean", None)
+                    _ds_set("rfm_df", None)
                     st.rerun()
 
-            if st.session_state.preprocessed:
-                df_c = st.session_state.df_clean
-                rfm = st.session_state.rfm_df
-                st.metric("有效记录", f"{len(df_c):,}")
-                st.metric("总销售额", f"{df_c['TotalPrice'].sum():,.0f}")
-                if rfm is not None:
-                    st.metric("客户/Segment", f"{len(rfm):,}")
+            if _ds_get("preprocessed"):
+                df_c = _ds_get("df_clean")
+                rfm = _ds_get("rfm_df")
+                if df_c is not None:
+                    st.metric("有效记录", f"{len(df_c):,}")
+                    st.metric("总销售额", f"{df_c['TotalPrice'].sum():,.0f}")
+                    if rfm is not None:
+                        st.metric("客户/Segment", f"{len(rfm):,}")
         else:
             st.caption("请先加载数据")
 
@@ -426,10 +481,10 @@ def page_main():
 
     # ========== Tab: Data Overview ==========
     with tabs[0]:
-        if not st.session_state.data_loaded:
+        if _ds_get("df_raw") is None:
             st.info("👈 请上传数据文件或用默认数据集。")
         else:
-            df = st.session_state.df_raw
+            df = _ds_get("df_raw")
             c1, c2, c3 = st.columns(3)
             c1.metric("总行数", f"{len(df):,}")
             c2.metric("列数", len(df.columns))
@@ -452,20 +507,20 @@ def page_main():
                 if num_cols:
                     st.dataframe(df[num_cols].describe(), width="stretch")
 
-            if st.session_state.preprocessed:
+            if _ds_get("preprocessed"):
                 st.divider()
                 st.subheader("预处理后数据")
-                st.dataframe(st.session_state.df_clean.head(20), width="stretch")
+                st.dataframe(_ds_get("df_clean").head(20), width="stretch")
                 st.subheader("RFM 客户分层表")
-                st.dataframe(st.session_state.rfm_df.head(20), width="stretch")
+                st.dataframe(_ds_get("rfm_df").head(20), width="stretch")
 
     # ========== Tab: Data Analysis ==========
     with tabs[1]:
-        if not st.session_state.preprocessed:
+        if not _ds_get("preprocessed"):
             st.info("请先在左侧运行数据预处理。")
         else:
-            df_clean = preprocessor.get_clean_transactions(st.session_state.df_clean)
-            rfm_df = st.session_state.rfm_df
+            df_clean = preprocessor.get_clean_transactions(_ds_get("df_clean"))
+            rfm_df = _ds_get("rfm_df")
 
             analysis_type = st.selectbox("选择分析方法", [
                 "📦 产品销售 Top-N", "🗺️ 国家/地区分析", "📈 月度销售趋势",
@@ -530,7 +585,7 @@ def page_main():
 
     # ========== Tab: Intelligent Q&A ==========
     with tabs[2]:
-        if not st.session_state.preprocessed:
+        if not _ds_get("preprocessed"):
             st.info("请先在左侧运行数据预处理。")
         else:
             st.subheader("💬 智能问答")
@@ -555,8 +610,8 @@ def page_main():
             query = st.chat_input("输入你的数据问题...") or default_q
 
             if query:
-                df_clean = preprocessor.get_clean_transactions(st.session_state.df_clean)
-                rfm = st.session_state.rfm_df
+                df_clean = preprocessor.get_clean_transactions(_ds_get("df_clean"))
+                rfm = _ds_get("rfm_df")
 
                 with st.spinner("分析中..." + (" (DeepSeek AI 思考中...)" if has_llm else "")):
                     result = qa_engine.parse_query(query, df_clean, rfm)
