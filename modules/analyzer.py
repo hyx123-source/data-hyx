@@ -60,51 +60,64 @@ def top_n_analysis(df: pd.DataFrame, by: str = "TotalPrice", n: int = 10,
     Returns:
         DataFrame with columns: group_col, total_{by}, avg_{by}, count
     """
+    agg_dict = {"total": ("TotalPrice", "sum")}
+    if "Quantity" in df.columns:
+        agg_dict["quantity"] = ("Quantity", "sum")
+    if "UnitPrice" in df.columns:
+        agg_dict["avg_unit_price"] = ("UnitPrice", "mean")
+    if "InvoiceNo" in df.columns:
+        agg_dict["transactions"] = ("InvoiceNo", "nunique")
+    if "CustomerID" in df.columns:
+        agg_dict["customers"] = ("CustomerID", "nunique")
+
     result = (
         df.groupby(group_col)
-        .agg(
-            total=("TotalPrice", "sum"),
-            avg_unit_price=("UnitPrice", "mean"),
-            quantity=("Quantity", "sum"),
-            transactions=("InvoiceNo", "nunique"),
-            customers=("CustomerID", "nunique"),
-        )
+        .agg(**agg_dict)
         .sort_values("total", ascending=False)
         .head(n)
         .reset_index()
     )
-    result.columns = [group_col, "TotalRevenue", "AvgUnitPrice", "TotalQuantity",
-                      "TransactionCount", "CustomerCount"]
+    col_map = {"total": "TotalRevenue"}
+    if "quantity" in agg_dict:
+        col_map["quantity"] = "TotalQuantity"
+    if "avg_unit_price" in agg_dict:
+        col_map["avg_unit_price"] = "AvgUnitPrice"
+    if "transactions" in agg_dict:
+        col_map["transactions"] = "TransactionCount"
+    if "customers" in agg_dict:
+        col_map["customers"] = "CustomerCount"
+    result.rename(columns=col_map, inplace=True)
     return result.round(2)
 
 
 def country_analysis(df: pd.DataFrame) -> pd.DataFrame:
     """Sales analysis by country."""
-    result = (
+    agg_dict = {"TotalRevenue": ("TotalPrice", "sum"), "AvgOrderValue": ("TotalPrice", "mean")}
+    if "InvoiceNo" in df.columns:
+        agg_dict["TransactionCount"] = ("InvoiceNo", "nunique")
+    if "CustomerID" in df.columns:
+        agg_dict["CustomerCount"] = ("CustomerID", "nunique")
+    return (
         df.groupby("Country")
-        .agg(
-            TotalRevenue=("TotalPrice", "sum"),
-            TransactionCount=("InvoiceNo", "nunique"),
-            CustomerCount=("CustomerID", "nunique"),
-            AvgOrderValue=("TotalPrice", "mean"),
-        )
+        .agg(**agg_dict)
         .sort_values("TotalRevenue", ascending=False)
         .reset_index()
+        .round(2)
     )
-    return result.round(2)
 
 
 def monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
     """Monthly sales trend analysis."""
+    agg_dict = {"TotalRevenue": ("TotalPrice", "sum"), "AvgOrderValue": ("TotalPrice", "mean")}
+    if "InvoiceNo" in df.columns:
+        agg_dict["TransactionCount"] = ("InvoiceNo", "nunique")
+    if "CustomerID" in df.columns:
+        agg_dict["CustomerCount"] = ("CustomerID", "nunique")
+    if "StockCode" in df.columns:
+        agg_dict["UniqueProducts"] = ("StockCode", "nunique")
     trend = (
         df.groupby("YearMonth")
-        .agg(
-            TotalRevenue=("TotalPrice", "sum"),
-            TransactionCount=("InvoiceNo", "nunique"),
-            CustomerCount=("CustomerID", "nunique"),
-            AvgOrderValue=("TotalPrice", "mean"),
-            UniqueProducts=("StockCode", "nunique"),
-        )
+        .agg(**agg_dict)
         .sort_index()
         .reset_index()
     )
@@ -113,10 +126,12 @@ def monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
 
 def hourly_trend(df: pd.DataFrame) -> pd.DataFrame:
     """Hourly sales pattern."""
+    agg_dict = {"TotalRevenue": ("TotalPrice", "sum")}
+    if "InvoiceNo" in df.columns:
+        agg_dict["TransactionCount"] = ("InvoiceNo", "nunique")
     return (
         df.groupby("Hour")
-        .agg(TotalRevenue=("TotalPrice", "sum"),
-             TransactionCount=("InvoiceNo", "nunique"))
+        .agg(**agg_dict)
         .reset_index()
     )
 
@@ -124,11 +139,14 @@ def hourly_trend(df: pd.DataFrame) -> pd.DataFrame:
 def weekday_trend(df: pd.DataFrame) -> pd.DataFrame:
     """Sales by day of week."""
     order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    agg_dict = {"TotalRevenue": ("TotalPrice", "sum")}
+    if "InvoiceNo" in df.columns:
+        agg_dict["TransactionCount"] = ("InvoiceNo", "nunique")
+    present = [d for d in order if d in df["WeekdayName"].unique()]
     trend = (
         df.groupby("WeekdayName")
-        .agg(TotalRevenue=("TotalPrice", "sum"),
-             TransactionCount=("InvoiceNo", "nunique"))
-        .reindex([d for d in order if d in df["WeekdayName"].unique()])
+        .agg(**agg_dict)
+        .reindex(present)
         .reset_index()
     )
     return trend
@@ -217,11 +235,14 @@ def product_clustering(rfm_df: pd.DataFrame, n_clusters: int = 4) -> dict:
 def search_products(df: pd.DataFrame, keyword: str, n: int = 10) -> pd.DataFrame:
     """Search products by keyword in Description."""
     mask = df["Description"].str.contains(keyword, case=False, na=False)
+    agg_dict = {"TotalRevenue": ("TotalPrice", "sum")}
+    if "Quantity" in df.columns:
+        agg_dict["TotalSold"] = ("Quantity", "sum")
     result = (
         df[mask]
         .groupby("Description")
-        .agg(TotalSold=("Quantity", "sum"), TotalRevenue=("TotalPrice", "sum"))
-        .sort_values("TotalSold", ascending=False)
+        .agg(**agg_dict)
+        .sort_values("TotalRevenue", ascending=False)
         .head(n)
         .reset_index()
     )

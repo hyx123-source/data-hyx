@@ -213,6 +213,16 @@ def preprocess_online_retail(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df["StockCode"] = "SKU-UNKNOWN"
 
+    # Ensure Quantity and UnitPrice canonical columns exist (for analyzer compatibility)
+    if c_quantity != "Quantity":
+        df["Quantity"] = df[c_quantity]
+    elif "Quantity" not in df.columns:
+        df["Quantity"] = 1
+    if c_price != "UnitPrice":
+        df["UnitPrice"] = df[c_price]
+    elif "UnitPrice" not in df.columns:
+        df["UnitPrice"] = df["TotalPrice"] / df["Quantity"].replace(0, 1)
+
     # 6. Compute RFM (only if CustomerID exists)
     if "CustomerID" in df.columns:
         reference_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
@@ -332,6 +342,12 @@ def preprocess_generic(df: pd.DataFrame) -> pd.DataFrame:
 
     if "StockCode" not in df.columns:
         df["StockCode"] = "SKU-" + df.index.astype(str)
+
+    if "Quantity" not in df.columns:
+        df["Quantity"] = 1
+
+    if "UnitPrice" not in df.columns:
+        df["UnitPrice"] = df["TotalPrice"]
 
     # Date features
     df["Year"] = df["InvoiceDate"].dt.year

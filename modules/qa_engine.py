@@ -207,28 +207,37 @@ def _execute(intent, chart_type, match, query, df, rfm_df):
 
         elif intent == "total_revenue":
             total = df["TotalPrice"].sum()
-            orders = df["InvoiceNo"].nunique()
-            data = pd.DataFrame({"指标": ["总收入", "订单数"], "数值": [f"{total:,.2f}", orders]})
-            answer = f"总销售额为 {total:,.2f}，共 {orders} 笔订单。"
+            orders = df["InvoiceNo"].nunique() if "InvoiceNo" in df.columns else len(df)
+            data = pd.DataFrame({"指标": ["总收入", "记录数"], "数值": [f"{total:,.2f}", orders]})
+            answer = f"总销售额为 {total:,.2f}。"
 
         elif intent == "avg_order_value":
-            avg = df.groupby("InvoiceNo")["TotalPrice"].sum().mean()
+            if "InvoiceNo" in df.columns:
+                avg = df.groupby("InvoiceNo")["TotalPrice"].sum().mean()
+            else:
+                avg = df["TotalPrice"].mean()
             data = pd.DataFrame({"指标": ["平均客单价"], "数值": [f"{avg:,.2f}"]})
             answer = f"平均每笔订单金额为 {avg:,.2f}。"
 
         elif intent == "return_analysis":
-            cancelled = df[df["IsCancelled"]]
-            rate = len(cancelled) / max(len(df), 1) * 100
-            data = pd.DataFrame({"类型": ["正常交易", "取消/退货"], "数量": [len(df), len(cancelled)]})
-            answer = f"退货/取消率为 {rate:.2f}%。"
+            if "IsCancelled" in df.columns:
+                cancelled = df[df["IsCancelled"]]
+                rate = len(cancelled) / max(len(df), 1) * 100
+            else:
+                rate = 0
+            data = pd.DataFrame({"指标": ["记录总数", "退货率%"], "数值": [len(df), round(rate, 2)]})
+            answer = f"共 {len(df):,} 条记录。"
 
         elif intent == "overview":
+            total = f"{df['TotalPrice'].sum():,.2f}"
+            orders = df["InvoiceNo"].nunique() if "InvoiceNo" in df.columns else len(df)
+            cust = df["CustomerID"].nunique() if "CustomerID" in df.columns else len(df)
+            prods = df["StockCode"].nunique() if "StockCode" in df.columns else 0
             data = pd.DataFrame({
-                "指标": ["总销售额", "订单数", "客户数", "产品数"],
-                "数值": [f"{df['TotalPrice'].sum():,.2f}", df["InvoiceNo"].nunique(),
-                        df["CustomerID"].nunique(), df["StockCode"].nunique()]
+                "指标": ["总销售额", "订单/记录数", "客户/实体数", "产品/类别数"],
+                "数值": [total, orders, cust, prods]
             })
-            answer = f"数据集包含 {df['InvoiceNo'].nunique()} 笔订单、{df['CustomerID'].nunique()} 位客户。"
+            answer = f"数据集包含 {orders:,} 条记录。"
 
         else:
             return _keyword_search(query, df)
@@ -363,16 +372,26 @@ Rules:
             rules = analyzer.market_basket_analysis(df, min_support=10)
             data = pd.DataFrame(rules[:20]) if rules else pd.DataFrame()
         elif intent == "total_revenue":
-            data = pd.DataFrame({"指标": ["总收入", "订单数"], "数值": [f"{df['TotalPrice'].sum():,.2f}", df["InvoiceNo"].nunique()]})
+            total = f"{df['TotalPrice'].sum():,.2f}"
+            orders = df["InvoiceNo"].nunique() if "InvoiceNo" in df.columns else len(df)
+            data = pd.DataFrame({"指标": ["总收入", "记录数"], "数值": [total, orders]})
         elif intent == "avg_order_value":
-            data = pd.DataFrame({"指标": ["平均客单价"], "数值": [f"{df.groupby('InvoiceNo')['TotalPrice'].sum().mean():,.2f}"]})
+            if "InvoiceNo" in df.columns:
+                avg = f"{df.groupby('InvoiceNo')['TotalPrice'].sum().mean():,.2f}"
+            else:
+                avg = f"{df['TotalPrice'].mean():,.2f}"
+            data = pd.DataFrame({"指标": ["平均每单金额"], "数值": [avg]})
         elif intent == "return_analysis":
-            cancelled = df[df["IsCancelled"]]
-            data = pd.DataFrame({"类型": ["正常", "退货"], "数量": [len(df), len(cancelled)]})
+            cancelled = df[df["IsCancelled"]] if "IsCancelled" in df.columns else pd.DataFrame()
+            data = pd.DataFrame({"类型": ["正常", "退货/取消"], "数量": [len(df), len(cancelled)]})
         elif intent == "overview":
+            total = f"{df['TotalPrice'].sum():,.2f}"
+            orders = df["InvoiceNo"].nunique() if "InvoiceNo" in df.columns else len(df)
+            cust = df["CustomerID"].nunique() if "CustomerID" in df.columns else len(df)
+            prods = df["StockCode"].nunique() if "StockCode" in df.columns else 0
             data = pd.DataFrame({
-                "指标": ["总销售额", "订单数", "客户数", "产品数"],
-                "数值": [f"{df['TotalPrice'].sum():,.2f}", df["InvoiceNo"].nunique(), df["CustomerID"].nunique(), df["StockCode"].nunique()]
+                "指标": ["总销售额", "记录数", "实体数", "类别数"],
+                "数值": [total, orders, cust, prods]
             })
         elif intent == "general_qa":
             chart_type = None
