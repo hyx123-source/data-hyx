@@ -78,8 +78,99 @@ def load_csv(file_bytes: bytes, encoding: str = None, **kwargs) -> pd.DataFrame:
 
 
 def load_excel(file_bytes: bytes, **kwargs) -> pd.DataFrame:
-    """Load Excel file (.xls / .xlsx)."""
-    return pd.read_excel(BytesIO(file_bytes), **kwargs)
+    """Load Excel file with auto header detection and numeric string cleaning."""
+    # First pass: load without header to detect structure
+    raw = pd.read_excel(BytesIO(file_bytes), header=None)
+
+    # Auto-detect best header row: the row with the most non-null, non-numeric, non-empty cells
+    best_row = 0
+    best_score = 1
+    for i in range(min(5, len(raw))):
+        row_vals = raw.iloc[i].dropna().astype(str).tolist()
+        # Score: count of reasonably named cells (not pure numbers, not too long)
+        score = sum(1 for v in row_vals
+                    if len(v) > 1 and len(v) < 30 and not v.replace(".", "").replace("-", "").isdigit())
+        if score > best_score:
+            best_score = score
+            best_row = i
+
+    # Reload with detected header
+    df = pd.read_excel(BytesIO(file_bytes), header=best_row)
+
+    # Drop columns that are fully unnamed or empty
+    unnamed_cols = [c for c in df.columns if isinstance(c, str) and c.startswith("Unnamed:")]
+    df = df.drop(columns=[c for c in unnamed_cols if df[c].isnull().all()])
+
+    # Drop rows that are completely empty
+    df = df.dropna(how="all").reset_index(drop=True)
+
+    # Drop rows where ALL columns except 1-2 are NaN (metadata rows like titles)
+    df = df[df.notna().sum(axis=1) >= max(2, len(df.columns) // 2)].reset_index(drop=True)
+
+    # Clean numeric strings: "1.2元" → 1.2, "¥100" → 100, "1,234.56" → 1234.56
+    df = _clean_numeric_strings(df)
+
+    # Re-evaluate column types after cleaning
+    for col in df.columns:
+        if df[col].dtype == object or str(df[col].dtype) == 'str':
+            df[col] = _infer_column_type(df[col])
+
+    return df
+
+
+def _clean_numeric_strings(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip common units/symbols from numeric-looking strings.
+
+    Two-pass strategy: first try matching known unit patterns, then fall back
+    to stripping all non-numeric characters.
+    """
+    import re
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype != object and str(df[col].dtype) != 'str':
+            continue
+        sample = df[col].dropna().head(20).astype(str)
+        # Pass 1: check if values look like numbers with optional unit suffix
+        has_digit = sample.str.contains(r'\d')
+        if has_digit.mean() < 0.5:
+            continue
+
+        # Pass 2: try stripping known unit chars first, then fall back to brute force
+        cleaned = df[col].astype(str).str.replace(r'[¥$€£元角分个只件台套次人天月年万千百十亿‰%\s]', '', regex=True)
+        cleaned = cleaned.str.replace(',', '')
+        numeric = pd.to_numeric(cleaned, errors='coerce')
+
+        # If the known-unit approach mostly failed, try stripping all non-[0-9.] chars
+        if numeric.notna().sum() < len(cleaned) * 0.7:
+            cleaned2 = df[col].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            numeric2 = pd.to_numeric(cleaned2, errors='coerce')
+            if numeric2.notna().sum() >= len(cleaned2) * 0.7:
+                df[col] = numeric2
+                continue
+
+        if numeric.notna().sum() >= len(cleaned) * 0.7:
+            df[col] = numeric
+
+    return df
+
+
+def _infer_column_type(series: pd.Series) -> pd.Series:
+    """Try to convert a series to numeric or datetime."""
+    # Try numeric
+    numeric = pd.to_numeric(series, errors='coerce')
+    if numeric.notna().sum() > len(series) * 0.8:
+        return numeric
+    # Try datetime (suppress dateutil fallback warning for non-date strings)
+    import warnings
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=UserWarning)
+            dt = pd.to_datetime(series, errors='coerce')
+        if dt.notna().sum() > len(series) * 0.5:
+            return dt
+    except Exception:
+        pass
+    return series
 
 
 def load_json(file_bytes: bytes, encoding: str = None, **kwargs) -> pd.DataFrame:
