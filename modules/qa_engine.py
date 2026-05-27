@@ -16,27 +16,17 @@ _llm_last_error = ""
 
 
 def _check_llm():
-    """Lazy check if DeepSeek LLM is available."""
+    """Lazy check if DeepSeek LLM is available. No live ping — just key check."""
     global _llm_available, _llm_last_error
+    if _llm_available is not None:
+        return _llm_available
     if not DEEPSEEK_API_KEY:
         _llm_available = False
         _llm_last_error = "未设置 DEEPSEEK_API_KEY"
         return False
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-        resp = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=5,
-        )
-        _llm_available = True
-        _llm_last_error = ""
-        return True
-    except Exception as e:
-        _llm_available = False
-        _llm_last_error = str(e)[:200]
-        return False
+    _llm_available = True
+    _llm_last_error = ""
+    return True
 
 
 def get_llm_status():
