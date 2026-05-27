@@ -431,7 +431,9 @@ def page_main():
             if has_llm:
                 st.success("🤖 DeepSeek AI 已连接 — 畅聊无限制，数据分析/电商咨询/通用对话皆可")
             else:
-                if "DEEPSEEK_API_KEY" in llm_error:
+                if "余额" in llm_error:
+                    st.warning(f"💰 {llm_error}")
+                elif "DEEPSEEK_API_KEY" in llm_error:
                     st.info("💡 AI 未连接，使用规则引擎。设置 `DEEPSEEK_API_KEY` 可解锁无限问答能力")
                 else:
                     st.warning(f"⚠️ DeepSeek 连接异常: {llm_error}")

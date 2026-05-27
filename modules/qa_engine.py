@@ -85,6 +85,7 @@ PATTERNS = [
 
 def parse_query(query: str, df: pd.DataFrame, rfm_df: pd.DataFrame = None) -> dict:
     """All queries go through DeepSeek LLM. Rule engine is fallback only."""
+    global _llm_available, _llm_last_error
     query = query.strip()
     if not query:
         return {"intent": "unknown", "chart_type": None, "data": pd.DataFrame(),
@@ -97,8 +98,13 @@ def parse_query(query: str, df: pd.DataFrame, rfm_df: pd.DataFrame = None) -> di
             if result and result.get("matched"):
                 result["source"] = "llm"
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            # Mark LLM unavailable so future queries skip straight to rule engine
+            _llm_available = False
+            _llm_last_error = str(e)[:200]
+            # If it's a balance issue, give a clear hint
+            if "402" in str(e) or "Insufficient Balance" in str(e):
+                _llm_last_error = "DeepSeek 账户余额不足，请充值后重启应用"
 
     # 2. Rule engine (fallback if LLM unavailable)
     for pattern, intent, chart_type in PATTERNS:
