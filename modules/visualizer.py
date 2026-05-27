@@ -210,6 +210,54 @@ def plot_empty(message: str = "No data available") -> go.Figure:
     return fig
 
 
+# ---- Multi-Dataset Overlay Charts ----
+
+
+def plot_multi_line(df: pd.DataFrame, x: str, y: str, title: str = "",
+                    color_col: str = "数据集") -> go.Figure:
+    """Multi-dataset overlaid line chart."""
+    fig = px.line(df, x=x, y=y, color=color_col, title=title,
+                  color_discrete_sequence=PALETTE, height=450,
+                  markers=True)
+    fig.update_layout(hovermode="x unified")
+    return fig
+
+
+def plot_multi_bar(df: pd.DataFrame, x: str, y: str, title: str = "",
+                   color_col: str = "数据集") -> go.Figure:
+    """Multi-dataset grouped bar chart."""
+    fig = px.bar(df, x=x, y=y, color=color_col, title=title,
+                 color_discrete_sequence=PALETTE, height=450,
+                 barmode="group")
+    return fig
+
+
+def plot_multi_line_bar(df: pd.DataFrame, x: str, y_bar: str, y_line: str,
+                        title: str = "", color_col: str = "数据集") -> go.Figure:
+    """Multi-dataset combo: grouped bars for one metric, lines for another."""
+    datasets = df[color_col].unique()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    colors = PALETTE[:len(datasets) * 2]
+    for i, ds_name in enumerate(datasets):
+        ds_data = df[df[color_col] == ds_name]
+        fig.add_trace(
+            go.Bar(x=ds_data[x], y=ds_data[y_bar], name=f"{ds_name} (营收)",
+                   marker_color=colors[i * 2], opacity=0.8),
+            secondary_y=False,
+        )
+        if y_line in df.columns:
+            fig.add_trace(
+                go.Scatter(x=ds_data[x], y=ds_data[y_line],
+                           name=f"{ds_name} (交易)", mode="lines+markers",
+                           line=dict(color=colors[i * 2 + 1], width=2)),
+                secondary_y=True,
+            )
+    fig.update_layout(title=title, height=500, hovermode="x unified")
+    fig.update_yaxes(title_text="Revenue", secondary_y=False)
+    fig.update_yaxes(title_text="Transactions", secondary_y=True)
+    return fig
+
+
 def auto_chart(df: pd.DataFrame, chart_type: str, **kwargs) -> go.Figure:
     """Auto-dispatch chart based on type string.
 

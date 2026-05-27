@@ -516,55 +516,120 @@ def page_main():
 
     # ========== Tab: Data Analysis ==========
     with tabs[1]:
-        if not _ds_get("preprocessed"):
-            st.info("请先在左侧运行数据预处理。")
+        # Collect preprocessed datasets for comparison
+        prepped = {}
+        for ds_name, ds in st.session_state._datasets.items():
+            if ds.get("preprocessed") and ds.get("df_clean") is not None:
+                prepped[ds_name] = ds
+
+        if not prepped:
+            st.info("请先在左侧对至少一个数据集运行数据预处理。")
         else:
-            df_clean = preprocessor.get_clean_transactions(_ds_get("df_clean"))
-            rfm_df = _ds_get("rfm_df")
+            active = st.session_state._active_dataset
+            dataset_names = list(prepped.keys())
+
+            # Comparison multi-select
+            compare_names = st.multiselect(
+                "对比数据集（可多选叠加对比）",
+                options=dataset_names,
+                default=[active] if active in prepped else [dataset_names[0]] if dataset_names else [],
+            )
+            if not compare_names:
+                compare_names = [dataset_names[0]] if dataset_names else []
+
+            is_multi = len(compare_names) > 1
 
             analysis_type = st.selectbox("选择分析方法", [
-                "📦 产品销售 Top-N", "🗺️ 国家/地区分析", "📈 月度销售趋势",
-                "⏰ 时段分析", "👥 RFM 客户分层", "🔗 购物篮关联", "🔍 产品搜索",
+                "📈 月度销售趋势", "⏰ 时段分析", "📦 产品销售 Top-N",
+                "🗺️ 国家/地区分析", "👥 RFM 客户分层", "🔗 购物篮关联", "🔍 产品搜索",
             ])
             st.divider()
 
-            if analysis_type == "📦 产品销售 Top-N":
-                n = st.slider("显示前 N 个", 5, 50, 15)
-                top = analyzer.top_n_analysis(df_clean, n=n)
-                st.plotly_chart(visualizer.plot_top_products(top), width="stretch")
-                st.dataframe(top, width="stretch")
+            def _run_comparison(analysis_fn, **kwargs):
+                frames = []
+                for ds_name in compare_names:
+                    df_c = preprocessor.get_clean_transactions(prepped[ds_name]["df_clean"])
+                    result = analysis_fn(df_c, **kwargs)
+                    result["数据集"] = ds_name
+                    frames.append(result)
+                return pd.concat(frames, ignore_index=True)
 
-            elif analysis_type == "🗺️ 国家/地区分析":
-                country = analyzer.country_analysis(df_clean)
-                c1, c2 = st.columns(2)
-                c1.plotly_chart(visualizer.plot_country_bar(country), width="stretch")
-                c2.plotly_chart(visualizer.plot_country_revenue(country), width="stretch")
-                st.dataframe(country, width="stretch")
+            # Single-dataset fallback references
+            df_clean = preprocessor.get_clean_transactions(
+                prepped.get(compare_names[0])["df_clean"]) if compare_names else None
+            rfm_df = prepped.get(compare_names[0])["rfm_df"] if compare_names else None
 
-            elif analysis_type == "📈 月度销售趋势":
-                trend = analyzer.monthly_trend(df_clean)
-                st.plotly_chart(visualizer.plot_monthly_trend(trend), width="stretch")
+            if analysis_type == "📈 月度销售趋势":
+                if is_multi:
+                    trend = _run_comparison(analyzer.monthly_trend)
+                    has_txn = "TransactionCount" in trend.columns
+                    st.plotly_chart(visualizer.plot_multi_line_bar(
+                        trend, x="YearMonth", y_bar="TotalRevenue",
+                        y_line="TransactionCount" if has_txn else None,
+                        title="月度销售趋势对比"), width="stretch")
+                else:
+                    trend = analyzer.monthly_trend(df_clean)
+                    st.plotly_chart(visualizer.plot_monthly_trend(trend), width="stretch")
                 st.dataframe(trend, width="stretch")
 
             elif analysis_type == "⏰ 时段分析":
                 c1, c2 = st.columns(2)
-                c1.plotly_chart(visualizer.plot_hourly(analyzer.hourly_trend(df_clean)), width="stretch")
-                c2.plotly_chart(visualizer.plot_weekday(analyzer.weekday_trend(df_clean)), width="stretch")
+                if is_multi:
+                    hourly = _run_comparison(analyzer.hourly_trend)
+                    c1.plotly_chart(visualizer.plot_multi_line(
+                        hourly, x="Hour", y="TotalRevenue",
+                        title="每小时销售额对比"), width="stretch")
+                    weekday = _run_comparison(analyzer.weekday_trend)
+                    c2.plotly_chart(visualizer.plot_multi_bar(
+                        weekday, x="WeekdayName", y="TotalRevenue",
+                        title="工作日销售额对比"), width="stretch")
+                else:
+                    c1.plotly_chart(visualizer.plot_hourly(
+                        analyzer.hourly_trend(df_clean)), width="stretch")
+                    c2.plotly_chart(visualizer.plot_weekday(
+                        analyzer.weekday_trend(df_clean)), width="stretch")
+
+            elif analysis_type == "📦 产品销售 Top-N":
+                n = st.slider("显示前 N 个", 5, 50, 15)
+                if is_multi:
+                    top = _run_comparison(analyzer.top_n_analysis, n=n)
+                    st.plotly_chart(visualizer.plot_multi_bar(
+                        top, x=top.columns[0], y="TotalRevenue",
+                        title=f"Top {n} 产品销售对比"), width="stretch")
+                else:
+                    top = analyzer.top_n_analysis(df_clean, n=n)
+                    st.plotly_chart(visualizer.plot_top_products(top), width="stretch")
+                st.dataframe(top, width="stretch")
+
+            elif analysis_type == "🗺️ 国家/地区分析":
+                if is_multi:
+                    country = _run_comparison(analyzer.country_analysis)
+                    st.plotly_chart(visualizer.plot_multi_bar(
+                        country.head(30), x="Country", y="TotalRevenue",
+                        title="国家/地区营收对比"), width="stretch")
+                else:
+                    country = analyzer.country_analysis(df_clean)
+                    c1, c2 = st.columns(2)
+                    c1.plotly_chart(visualizer.plot_country_bar(country), width="stretch")
+                    c2.plotly_chart(visualizer.plot_country_revenue(country), width="stretch")
+                st.dataframe(country, width="stretch")
 
             elif analysis_type == "👥 RFM 客户分层":
-                summary = analyzer.rfm_summary(rfm_df)
-                st.plotly_chart(visualizer.plot_rfm_distribution(rfm_df), width="stretch")
-                for seg, stats in summary["segment_stats"].items():
-                    with st.expander(f"{seg} ({stats['count']} 人, 营收 {stats['total_revenue']:,.2f})"):
-                        cols = st.columns(4)
-                        cols[0].metric("客户数", stats["count"])
-                        cols[1].metric("平均最近购买(天)", stats["avg_recency"])
-                        cols[2].metric("平均频次", stats["avg_frequency"])
-                        cols[3].metric("平均消费", f"{stats['avg_monetary']:,.2f}")
-                if st.button("运行 KMeans 聚类"):
-                    with st.spinner("聚类中..."):
-                        clust = analyzer.product_clustering(rfm_df)
-                        st.plotly_chart(visualizer.plot_cluster_scatter(rfm_df, clust["cluster_labels"]), width="stretch")
+                if rfm_df is not None:
+                    summary = analyzer.rfm_summary(rfm_df)
+                    st.plotly_chart(visualizer.plot_rfm_distribution(rfm_df), width="stretch")
+                    for seg, stats in summary["segment_stats"].items():
+                        with st.expander(f"{seg} ({stats['count']} 人, 营收 {stats['total_revenue']:,.2f})"):
+                            cols = st.columns(4)
+                            cols[0].metric("客户数", stats["count"])
+                            cols[1].metric("平均最近购买(天)", stats["avg_recency"])
+                            cols[2].metric("平均频次", stats["avg_frequency"])
+                            cols[3].metric("平均消费", f"{stats['avg_monetary']:,.2f}")
+                    if st.button("运行 KMeans 聚类"):
+                        with st.spinner("聚类中..."):
+                            clust = analyzer.product_clustering(rfm_df)
+                            st.plotly_chart(visualizer.plot_cluster_scatter(
+                                rfm_df, clust["cluster_labels"]), width="stretch")
 
             elif analysis_type == "🔗 购物篮关联":
                 ms = st.slider("最小支持度", 5, 100, 20)
@@ -576,9 +641,18 @@ def page_main():
                     st.warning("未找到关联规则，请降低最小支持度。")
 
             elif analysis_type == "🔍 产品搜索":
-                kw = st.text_input("关键词", placeholder="HEART, CANDLE...")
+                kw = st.text_input("关键词", placeholder="产品名称、描述关键词...")
                 if kw:
-                    result = analyzer.search_products(df_clean, kw)
+                    if is_multi:
+                        frames = []
+                        for ds_name in compare_names:
+                            df_c = preprocessor.get_clean_transactions(prepped[ds_name]["df_clean"])
+                            r = analyzer.search_products(df_c, kw)
+                            r["数据集"] = ds_name
+                            frames.append(r)
+                        result = pd.concat(frames, ignore_index=True)
+                    else:
+                        result = analyzer.search_products(df_clean, kw)
                     if len(result) > 0:
                         st.plotly_chart(visualizer.auto_chart(result.head(15), "bar"), width="stretch")
                         st.dataframe(result, width="stretch")
