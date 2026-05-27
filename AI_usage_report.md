@@ -8,12 +8,12 @@
 
 | 工具 | 用途 | 使用阶段 |
 |------|------|----------|
-| Claude Code (Anthropic Claude 4.x) | 项目架构设计、代码生成与调试、文档撰写、Bug修复 | 全流程 |
+| Claude Code (Anthropic Claude 4.x) | 项目架构设计、代码生成与调试、文档撰写、Bug修复、功能迭代 | 全流程 |
 | DeepSeek Chat API | 智能问答模块的核心推理引擎 | 交互式问答模块 |
 
 ---
 
-## 二、5 个关键 AI 使用案例
+## 二、6 个关键 AI 使用案例
 
 ### 案例 1：项目整体架构设计与技术选型
 
@@ -40,7 +40,7 @@
   - 设计了三层后备策略并调整了优先级：LLM 优先（在线智能）→ 规则引擎兜底（20+ 条正则覆盖高频口语）→ 关键词搜索（最后手段）
   - 反复调试 system prompt，发现 LLM 偶尔输出非标准 JSON（如包裹在 ```json 代码块中），增加了 `raw.split("```")` 的容错解析
   - 手动测试了 30+ 条中文口语化问题（"哪个国家最有钱"、"最近卖得怎么样"）验证 LLM 和规则引擎的正确性
-  - 后来根据用户反馈，**移除了对问题范围的限制**：将 system prompt 从"仅回答数据问题"改为"可回答任意问题，侧重电商分析"，增加了 general_qa 意图支持
+  - 根据用户反馈**移除了对问题范围的限制**：将 system prompt 从"仅回答数据问题"改为"可回答任意问题，侧重电商分析"
   - 将 DEEPSEEK_API_KEY 管理方式改为代码内置默认 key，降低用户配置门槛
 - **最终结果**：LLM 在线时可理解任意自然语言问题，离线时规则引擎仍能处理 20+ 种高频分析场景
 
@@ -70,7 +70,6 @@
 - **LLM 返回内容摘要**：提供了完整的 `auth.py` 代码，包含建表 SQL（users 表 + query_logs 表）、密码哈希（hashlib.sha256 + os.urandom 生成盐值）、CRUD 操作函数、以及 Streamlit session_state 集成示例。
 - **学生如何修改/验证**：
   - 增加了 `secrets.compare_digest()` 替换 `==` 比较，防止时序攻击
-  - 将 SQLite 数据库路径从根目录改为 `data/` 目录，与数据集统一管理
   - 设计了 session_state 驱动的页面路由（login → register → main → admin）
   - 增加了"修改密码"功能（包含原密码验证）
   - 在管理员面板中实现了按用户筛选问答日志的功能
@@ -79,23 +78,36 @@
 
 ---
 
-### 案例 5：系统鲁棒性修复与用户体验优化（本轮迭代）
+### 案例 5：通用数据预处理与鲁棒性增强
 
-- **任务目标**：解决三大线上问题——(1) 上传非 Online Retail 数据集时系统崩溃 (2) 上传数据后页面刷新导致数据丢失 (3) 登录页面不支持回车提交且交互不流畅
+- **任务目标**：解决系统对非 Online Retail 数据集兼容性差的问题——上传自定义 CSV/Excel 时因列名不匹配导致崩溃
 - **采用的 Prompt**：
-  > "preprocessor.py 中 preprocess_online_retail 函数硬编码了 CustomerID/Description 等列名，用户上传自己的 CSV 时会报 KeyError。请：(1) 添加列名自动检测映射；(2) 为不匹配的数据集提供通用预处理回退方案；(3) 确保处理后的 DataFrame 始终包含下游需要的所有列"
-  > "登录页面用 st.button 不支持回车，且没有 loading 状态。改成 st.form 实现，并加 spinner"
-- **LLM 返回内容摘要**：
-  - 预处理方案：提出 `_normalize_column_name()` + `COLUMN_ALIASES` 映射表自动检测列名；`is_online_retail_dataset()` 判断数据集类型；`preprocess_generic()` 为任意数据集补充兼容列
-  - 登录方案：使用 `st.form` + `st.form_submit_button` 替代普通 button，支持回车提交；添加 `with st.spinner` 包装登录请求
+  > "preprocessor.py 中 preprocess_online_retail 函数硬编码了 CustomerID/Description 等列名，用户上传自己的 CSV 时会报 KeyError。请：(1) 添加列名自动检测映射（含中文列名）；(2) 为不匹配的数据集提供通用预处理回退方案；(3) 确保处理后的 DataFrame 始终包含下游需要的所有列"
+- **LLM 返回内容摘要**：提出 `_normalize_column_name()` + `COLUMN_ALIASES` 映射表自动检测列名；`is_online_retail_dataset()` 判断数据集类型；`preprocess_generic()` 为任意数据集补充兼容列
 - **学生如何修改/验证**：
-  - 在 `COLUMN_ALIASES` 中补充了常见列名的中英文变体（如"单价"→UnitPrice）
-  - `preprocess_generic()` 中增加了日期列自动检测、数值列中位数填充、分类列众数填充
-  - 确保两种预处理路径输出的 DataFrame 都包含 TotalPrice、InvoiceDate、CustomerID、InvoiceNo、Country、Description、StockCode、IsCancelled、Segment 等统一列
-  - 同时修复了上传新文件时残留旧预处理结果的问题（添加 `st.session_state.df_clean = None`）
-  - 在 QA 引擎中移除了 LLM prompt 的意图限制，允许回答数据分析之外的任意问题（电商咨询、概念解释、通用对话）
+  - 在 `COLUMN_ALIASES` 中补充了大量中英文列名变体（金额→TotalPrice、缴纳金额→TotalPrice、单价→UnitPrice 等）
+  - 设计了 `_find_value_column()` 智能列检测：策略1=别名匹配、策略2=浮点列优先（看起来像金额）、策略3=过滤ID列（跳过纯序号/唯一值列）、策略4=回退到首个数值列
+  - 修复了 pandas StringDtype 导致数值清洗失效的问题（`str(pd.StringDtype())` 返回 `'str'` 而非 `'string'`）
+  - 增加 Excel 数值字符串清洗：两遍策略——先尝试去除已知单位字符（元角分个只件…），再暴力去除所有非 [0-9.] 字符
   - 测试了上传 3 种不同结构的数据集确认不再崩溃
-- **最终结果**：系统可处理任意 CSV/Excel/JSON 数据集，不再依赖特定列名；登录体验流畅（回车提交 + loading 反馈）；问答不再限制范围
+- **最终结果**：系统可处理任意 CSV/Excel/JSON 数据集，中英文列名自动识别，不再依赖特定列名
+
+---
+
+### 案例 6：多数据集管理架构设计（本轮新增）
+
+- **任务目标**：实现同时加载多个数据集、独立预处理、叠加对比、合并分析、跨数据集智能问答的完整多数据集架构
+- **采用的 Prompt**：
+  > "只能分析一个数据集，要能分析多个。需要：1) 同时加载和管理多个数据集；2) 在分析页面选择多个数据集叠加对比；3) 支持合并多个数据集为统一数据集；4) 智能问答也能跨多个数据集提问"
+- **LLM 返回内容摘要**：提出用 `_datasets` dict 替代原有的单一 DataFrame 状态，设计 `_ds_get`/`_ds_set` 访问器函数封装数据集操作；分析页面用 `pd.concat` + "数据集" 标签列实现叠加对比；合并功能使用 `pd.concat` + `preprocess_generic` 重新计算；问答引擎增加 `extra_info` 参数传递多数据集上下文
+- **学生如何修改/验证**：
+  - 设计了完整的数据集注册表架构：`_datasets` dict 存储每个数据集的独立状态（df_raw/df_clean/rfm_df/preprocessed），`_active_dataset` 追踪当前活跃数据集，`_dataset_order` 维护排序
+  - 实现了数据集管理 UI：蓝色/白色圆点标识活跃/非活跃状态，切换按钮、删除按钮
+  - 在可视化模块新增了 3 个多数据集叠加图表函数：`plot_multi_line`、`plot_multi_bar`、`plot_multi_line_bar`
+  - 修复了合并数据集重复预处理导致的 RFM 列名冲突 Bug：合并后直接标记为已预处理，同时在 `preprocess_online_retail` 中增加已有 RFM 列的清理逻辑
+  - 管理员可访问所有用户保存的数据集文件，普通用户只能访问自己的
+  - 实现了保存文件的磁盘删除功能（确认弹窗防止误删）
+- **最终结果**：完整的多数据集管理生态——同时加载、独立预处理、叠加对比、合并分析、跨数据集问答
 
 ---
 
@@ -105,22 +117,25 @@
 
 1. **选择 Online Retail 数据集** — 对比 5 个候选数据集后，选择业务逻辑最清晰、字段最完整的
 2. **技术栈选型** — 决定用 Streamlit 而非 Flask/Django/React，确保纯 Python 且快速出活
-3. **LLM 优先架构** — 决定了"所有问答先走 DeepSeek，规则引擎仅作后备"的双层策略，这是我提的设计思路
+3. **LLM 优先架构** — 决定了"所有问答先走 DeepSeek，规则引擎仅作后备"的双层策略
 4. **创新方向** — 以"DeepSeek LLM 自然语言问答 + 智能图表推荐"作为核心差异化创新点
 5. **增加用户认证系统** — 项目要求并未强制，但我认为完整系统应包含多用户支持
 6. **RFM + KMeans 双重分析** — RFM 做业务规则分层，KMeans 做数据驱动聚类，两种方法互补
 7. **通用预处理方案** — 让系统不再依赖特定数据集，支持任意 CSV 上传，提升了实用价值
-8. **移除问答限制** — 决定不限制用户问题范围，让 LLM 自由回答，增强产品实用性
+8. **移除问答限制** — 决定不限制用户问题范围，让 LLM 自由回答
+9. **多数据集架构设计** — 设计了 `_datasets` dict + 访问器函数 + 叠加对比图表的完整方案，这是我自己思考的架构设计
+10. **智能列检测策略** — 设计了四层递进的 `_find_value_column()` 策略（别名→浮点→过滤ID→回退），解决了通用数据集中金额列识别问题
 
 ### 自己重写或实质性修改的代码
 
 | 文件 | 修改内容 |
 |------|----------|
-| `modules/qa_engine.py` | 从纯规则引擎改为 LLM 优先架构，重写 system prompt 和 JSON 解析，增加容错逻辑，移除意图限制 |
-| `app.py` | 整合 auth 模块，设计 session_state 驱动的多页面路由，登录表单改为 st.form，修复数据持久化问题 |
+| `modules/qa_engine.py` | 从纯规则引擎改为 LLM 优先架构，重写 system prompt 和 JSON 解析，增加容错逻辑，移除意图限制，增加多数据集 extra_info 支持 |
+| `app.py` | 整合 auth 模块，设计 session_state 驱动的多页面路由；重构为多数据集架构（_datasets dict + _ds_get/_ds_set 访问器）；新增数据集合并 UI、多数据集对比选择器、多数据集问答 |
 | `modules/auth.py` | 增加 compare_digest 安全比较、修改密码功能、问答日志表设计、管理员 CRUD |
-| `modules/preprocessor.py` | 新增列名自动检测（COLUMN_ALIASES映射）、通用预处理函数 preprocess_generic()，修改原有函数增加容错 |
-| `modules/analyzer.py` | 市场篮子分析从完整 Apriori 改为高效配对计数方案，更适合 50 万行级别数据 |
+| `modules/preprocessor.py` | 新增列名自动检测（COLUMN_ALIASES 中英文映射）、通用预处理函数 preprocess_generic()、_find_value_column() 智能列检测、增加已有 RFM 列清理逻辑 |
+| `modules/data_loader.py` | 修复 StringDtype 解析问题、Excel 数值字符串两遍清洗、类型推断函数 |
+| `modules/visualizer.py` | 新增多数据集叠加图表（plot_multi_line/plot_multi_bar/plot_multi_line_bar） |
 
 ### 参考了 AI 建议但未采纳的内容
 
@@ -136,8 +151,8 @@
 ### AI 最帮助提升效率的环节
 
 - **代码框架生成**（效率提升约 60%）：每个模块的基础代码结构由 AI 快速生成，我只需在框架上修改和完善
-- **API/库语法查询**：不用查 Stack Overflow 或官方文档，直接问 Claude "plotly 怎么画饼图"或"pandas qcut 怎么处理重复边界值"
-- **Bug 定位与修复**：遇到 KeyError 或 session_state 问题时，Claude 能快速定位根源（如列名硬编码、状态未重置）并给出修复方案
+- **API/库语法查询**：不用查 Stack Overflow 或官方文档，直接问 Claude "plotly 怎么画叠加柱状图"或"pandas concat 怎么加标签列"
+- **Bug 定位与修复**：遇到 KeyError 或 session_state 问题时，Claude 能快速定位根源（如 StringDtype 类型判断、RFM 列名冲突）并给出修复方案
 - **文档模板起草**：README、PPT 大纲、演示脚本的初始结构由 AI 辅助起草
 - **代码 Review**：让 Claude 审查代码中的安全漏洞（如密码比较、SQL 注入）并提供加固建议
 
@@ -145,16 +160,17 @@
 
 - **脱离实际上下文的代码**：AI 会使用不存在的 API 参数（如 Streamlit 旧版本的 API），或忽略实际文件的目录结构
 - **过度工程化倾向**：对于简单任务（如一个表单页面），AI 倾向于生成多层抽象和额外的配置类
-- **中文 NLP 准确性不足**：正则表达式匹配中文口语化问题时，AI 生成的正则准确率约 70%，需要大量人工调整（如"卖得最好"vs"卖的最好"vs"销量最高"）
+- **中文 NLP 准确性不足**：正则表达式匹配中文口语化问题时，AI 生成的正则准确率约 70%，需要大量人工调整
 - **缺乏全局一致性**：AI 擅长局部代码片段，但对于模块间的数据流、状态传递、列名约定等全局一致性，需要人来把控和统一
+- **pandas 类型系统不熟悉**：AI 对 pandas >= 2.0 的 StringDtype 默认行为不够了解，首次修复方案错误（使用 `'string'` 而非 `'str'`），需要我通过实际测试才能定位
 
 ### 如果重新做一遍，会如何更高效地使用 AI
 
 1. **先让 AI 画架构图再写代码**：在动手编码前，用 AI 梳理完整的数据流和页面交互流程，确认无误后再生成代码
-2. **分模块逐步迭代**：每个模块先用 AI 生成 MVP（最小可行版本），手动跑通后再逐步增加功能，而不是一次性生成全部代码
-3. **写好测试并让 AI 一起生成测试**：每个数据处理函数都应有对应的测试用例，让 AI 同步生成测试代码
-4. **用 AI 做 Code Review**：生成代码后，让 AI 从安全性、性能、可读性三个角度审核，标注潜在问题
-5. **建立项目专属的 AI 记忆**：使用 CLAUDE.md 或项目级 instructions 让 AI 记住项目约定（如列名规范、session_state 设计），减少重复沟通成本
+2. **分模块逐步迭代**：每个模块先用 AI 生成 MVP（最小可行版本），手动跑通后再逐步增加功能
+3. **写好测试并让 AI 一起生成测试**：每个数据处理函数都应有对应的测试用例
+4. **用 AI 做 Code Review**：生成代码后，让 AI 从安全性、性能、可读性三个角度审核
+5. **建立项目专属的 AI 记忆**：使用 CLAUDE.md 或项目级 instructions 让 AI 记住项目约定，减少重复沟通成本
 
 ---
 
@@ -162,13 +178,14 @@
 
 | 开发环节 | 使用工具 | 具体使用方式 | AI 贡献比例（估算） |
 |----------|----------|-------------|-------------------|
-| 需求分析与架构设计 | Claude Code | 讨论技术方案、模块划分 | 30%（框架建议），70%（我做的方向决策） |
+| 需求分析与架构设计 | Claude Code | 讨论技术方案、模块划分 | 30%（框架建议），70%（我的方向决策） |
 | 数据读取模块 | Claude Code | 生成 CSV/Excel/JSON 多格式读取代码 | 70%（框架），30%（我调整编码检测和错误处理） |
 | 数据预处理模块 | Claude Code | 生成清洗函数、列名映射、通用预处理 | 50%（初始代码），50%（我设计的通用化方案） |
-| 数据分析模块 | Claude Code | 生成 RFM、关联分析、聚类等算法的 Pandas 实现 | 60%（算法框架），40%（我调整参数和边界处理） |
-| 可视化模块 | Claude Code | 生成 Plotly 图表函数 | 80%（图表代码），20%（我调整的颜色和布局） |
-| 智能问答模块 | Claude Code + DeepSeek API | Claude 设计管线架构，DeepSeek 做运行时推理 | 50%（Claude 生成管线代码），50%（我设计的三层兜底和 prompt 调优） |
+| 数据分析模块 | Claude Code | 生成 RFM、关联分析、聚类等算法实现 | 60%（算法框架），40%（我调整参数和边界处理） |
+| 可视化模块 | Claude Code | 生成 Plotly 图表函数（含多数据集叠加） | 80%（图表代码），20%（我调整的颜色和布局） |
+| 智能问答模块 | Claude Code + DeepSeek API | Claude 设计管线架构，DeepSeek 做运行时推理 | 50%（Claude 生成管线），50%（我设计的三层兜底和 prompt 调优） |
 | 用户认证模块 | Claude Code | 生成 SQLite + SHA-256 认证代码 | 60%（初始代码），40%（安全加固和功能扩展） |
+| 多数据集架构 | Claude Code | 生成数据集管理、叠加对比、合并功能代码 | 40%（框架代码），60%（我设计的架构和状态管理方案） |
 | 前端整合 | Claude Code | 生成 Streamlit 布局、表单、路由代码 | 60%（布局代码），40%（我调整的交互细节和状态管理） |
 | 鲁棒性修复 | Claude Code | 定位 Bug 根源、生成修复方案 | 40%（定位问题），60%（我验证和调整的修复方案） |
 | 文档撰写 | Claude Code | 生成 README/PPT/演示脚本/AI 报告的初稿 | 50%（框架和内容），50%（我的修改和补充） |
