@@ -395,6 +395,36 @@ def page_main():
         else:
             st.caption("暂无数据集，请上传或选择已保存的文件")
 
+        # ---- Merge datasets ----
+        prepped_for_merge = {}
+        for ds_name, ds in st.session_state._datasets.items():
+            if ds.get("preprocessed") and ds.get("df_clean") is not None:
+                prepped_for_merge[ds_name] = ds
+        if len(prepped_for_merge) >= 2:
+            st.divider()
+            st.subheader("🔀 合并数据集")
+            merge_pick = st.multiselect(
+                "选择要合并的数据集（2个以上）",
+                options=list(prepped_for_merge.keys()),
+                key="merge_pick",
+            )
+            if len(merge_pick) >= 2 and st.button("合并选中数据集", width="stretch",
+                                                    key="merge_btn"):
+                with st.spinner("合并中..."):
+                    frames = []
+                    merged_names = []
+                    for n in merge_pick:
+                        df_c = prepped_for_merge[n]["df_clean"].copy()
+                        df_c["_来源数据集"] = n
+                        frames.append(df_c)
+                        merged_names.append(n)
+                    merged_df = pd.concat(frames, ignore_index=True)
+                    merged_df = preprocessor.preprocess_generic(merged_df)
+                    merge_name = "合并 (" + " + ".join(merged_names) + ")"
+                    _register_dataset(merge_name, merged_df, f"合并: {merge_name}")
+                    st.success(f"✅ 已创建合并数据集: {merge_name} ({len(merged_df):,} 行)")
+                    st.rerun()
+
         st.divider()
 
         # Module 2: Preprocessing (for active dataset)
@@ -659,10 +689,28 @@ def page_main():
 
     # ========== Tab: Intelligent Q&A ==========
     with tabs[2]:
-        if not _ds_get("preprocessed"):
-            st.info("请先在左侧运行数据预处理。")
+        # Collect preprocessed datasets for multi-dataset Q&A
+        prepped = {}
+        for ds_name, ds in st.session_state._datasets.items():
+            if ds.get("preprocessed") and ds.get("df_clean") is not None:
+                prepped[ds_name] = ds
+
+        if not prepped:
+            st.info("请先在左侧对至少一个数据集运行数据预处理。")
         else:
+            active = st.session_state._active_dataset
+            dataset_names = list(prepped.keys())
+
             st.subheader("💬 智能问答")
+
+            # Multi-dataset selector
+            qa_datasets = st.multiselect(
+                "选择要提问的数据集（可多选，合并分析）",
+                options=dataset_names,
+                default=[active] if active in prepped else [dataset_names[0]] if dataset_names else [],
+            )
+            if not qa_datasets:
+                qa_datasets = [dataset_names[0]] if dataset_names else []
 
             has_llm, llm_error = qa_engine.get_llm_status()
             if has_llm:
@@ -684,11 +732,24 @@ def page_main():
             query = st.chat_input("输入你的数据问题...") or default_q
 
             if query:
-                df_clean = preprocessor.get_clean_transactions(_ds_get("df_clean"))
-                rfm = _ds_get("rfm_df")
+                # Merge data if multiple datasets selected
+                if len(qa_datasets) > 1:
+                    frames = [preprocessor.get_clean_transactions(prepped[n]["df_clean"]) for n in qa_datasets]
+                    df_clean = pd.concat(frames, ignore_index=True)
+                    # Merge RFM tables too
+                    rfm_frames = [prepped[n]["rfm_df"] for n in qa_datasets]
+                    rfm = pd.concat(rfm_frames, ignore_index=True) if rfm_frames else None
+                    multi_context = "\n".join(
+                        f"数据集 '{n}': {len(prepped[n]['df_clean'])} 行记录"
+                        for n in qa_datasets
+                    )
+                else:
+                    df_clean = preprocessor.get_clean_transactions(prepped[qa_datasets[0]]["df_clean"])
+                    rfm = prepped[qa_datasets[0]]["rfm_df"]
+                    multi_context = ""
 
                 with st.spinner("分析中..." + (" (DeepSeek AI 思考中...)" if has_llm else "")):
-                    result = qa_engine.parse_query(query, df_clean, rfm)
+                    result = qa_engine.parse_query(query, df_clean, rfm, extra_info=multi_context)
 
                 if not has_llm and result.get("source") == "fallback":
                     st.info("💡 该问题超出了规则引擎范围。接入 DeepSeek AI 后可回答任意问题，设置 `DEEPSEEK_API_KEY` 即可。")

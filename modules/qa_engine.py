@@ -83,7 +83,8 @@ PATTERNS = [
 ]
 
 
-def parse_query(query: str, df: pd.DataFrame, rfm_df: pd.DataFrame = None) -> dict:
+def parse_query(query: str, df: pd.DataFrame, rfm_df: pd.DataFrame = None,
+                extra_info: str = "") -> dict:
     """All queries go through DeepSeek LLM. Rule engine is fallback only."""
     global _llm_available, _llm_last_error
     query = query.strip()
@@ -94,15 +95,13 @@ def parse_query(query: str, df: pd.DataFrame, rfm_df: pd.DataFrame = None) -> di
     # 1. DeepSeek LLM (primary)
     if _check_llm():
         try:
-            result = _llm_query(query, df, rfm_df)
+            result = _llm_query(query, df, rfm_df, extra_info)
             if result and result.get("matched"):
                 result["source"] = "llm"
                 return result
         except Exception as e:
-            # Mark LLM unavailable so future queries skip straight to rule engine
             _llm_available = False
             _llm_last_error = str(e)[:200]
-            # If it's a balance issue, give a clear hint
             if "402" in str(e) or "Insufficient Balance" in str(e):
                 _llm_last_error = "DeepSeek 账户余额不足，请充值后重启应用"
 
@@ -265,8 +264,11 @@ def _keyword_search(query, df):
 # LLM Integration (DeepSeek)
 # ================================================================
 
-def _build_data_context(df, rfm_df=None):
-    lines = [f"Rows: {len(df):,}", f"Columns: {', '.join(df.columns.tolist())}"]
+def _build_data_context(df, rfm_df=None, extra_info=""):
+    lines = []
+    if extra_info:
+        lines.append(extra_info)
+    lines += [f"Rows: {len(df):,}", f"Columns: {', '.join(df.columns.tolist())}"]
     if "InvoiceDate" in df.columns:
         lines.append(f"Date range: {df['InvoiceDate'].min()} to {df['InvoiceDate'].max()}")
     if "TotalPrice" in df.columns:
@@ -287,11 +289,11 @@ def _build_data_context(df, rfm_df=None):
     return "\n".join(lines)
 
 
-def _llm_query(query, df, rfm_df=None):
+def _llm_query(query, df, rfm_df=None, extra_info=""):
     from openai import OpenAI
     from modules import analyzer
 
-    context = _build_data_context(df, rfm_df)
+    context = _build_data_context(df, rfm_df, extra_info)
     intents = "top_products, bottom_products, top_countries, country_ranking, country_detail, monthly_trend, recent_period, hourly_pattern, weekday_pattern, rfm_segments, rfm_champions, rfm_atrisk, customer_count, search_product, basket_association, total_revenue, avg_order_value, return_analysis, overview, general_qa"
 
     system = f"""You are an intelligent data analyst and AI assistant specializing in e-commerce analytics. You can answer ANY question the user asks — not limited to data queries.
