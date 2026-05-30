@@ -6,6 +6,7 @@ Source: Student + AI collaboration.
 import re
 import json
 import os
+import hashlib
 import pandas as pd
 
 # ---- DeepSeek API configuration ----
@@ -13,6 +14,12 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "") or "sk-4c378ae95b254304aa47b90d9b522122"
 _llm_available = None
 _llm_last_error = ""
+
+# ---- LLM response cache ----
+_llm_cache = {}
+CACHE_MAX_SIZE = 200
+_cache_hits = 0
+_cache_misses = 0
 
 
 def _check_llm():
@@ -33,6 +40,32 @@ def get_llm_status():
     """Return (available: bool, error_message: str)."""
     _check_llm()
     return _llm_available, _llm_last_error
+
+
+def get_cache_stats():
+    """Return (hits: int, misses: int, size: int)."""
+    return _cache_hits, _cache_misses, len(_llm_cache)
+
+
+def clear_cache():
+    """Clear the LLM response cache."""
+    global _llm_cache
+    _llm_cache.clear()
+
+
+def _data_fingerprint(df, rfm_df=None):
+    """Compute a lightweight fingerprint of the dataset for cache key."""
+    h = hashlib.md5()
+    h.update(str(len(df)).encode())
+    h.update(",".join(sorted(df.columns.tolist())).encode())
+    if "TotalPrice" in df.columns:
+        h.update(str(int(df["TotalPrice"].sum())).encode())
+    if "InvoiceDate" in df.columns:
+        h.update(str(df["InvoiceDate"].min()).encode())
+        h.update(str(df["InvoiceDate"].max()).encode())
+    if rfm_df is not None and "Segment" in rfm_df.columns:
+        h.update(str(rfm_df["Segment"].value_counts().to_dict()).encode())
+    return h.hexdigest()[:16]
 
 
 # ---- Rule engine patterns ----
@@ -290,41 +323,45 @@ def _build_data_context(df, rfm_df=None, extra_info=""):
 
 
 def _llm_query(query, df, rfm_df=None, extra_info=""):
+    global _cache_hits, _cache_misses
+
+    # Check cache first
+    fp = _data_fingerprint(df, rfm_df)
+    cache_key = f"{fp}|{query.strip().lower()}"
+    if cache_key in _llm_cache:
+        _cache_hits += 1
+        return _llm_cache[cache_key]
+
+    _cache_misses += 1
+
     from openai import OpenAI
     from modules import analyzer
 
     context = _build_data_context(df, rfm_df, extra_info)
     intents = "top_products, bottom_products, top_countries, country_ranking, country_detail, monthly_trend, recent_period, hourly_pattern, weekday_pattern, rfm_segments, rfm_champions, rfm_atrisk, customer_count, search_product, basket_association, total_revenue, avg_order_value, return_analysis, overview, general_qa"
 
-    system = f"""You are an intelligent data analyst and AI assistant specializing in e-commerce analytics. You can answer ANY question the user asks — not limited to data queries.
+    system = f"""你是电商数据分析助手。回答任意问题，不仅限于数据查询。
 
-Data context (current e-commerce dataset):
+当前数据:
 {context}
 
-Core capabilities:
-- Data analysis: trends, rankings, segments, correlations, search
-- General conversation: chat, explain concepts, give advice, answer questions
-- E-commerce expertise: retail metrics, customer behavior, marketing strategy
+可用意图: {intents}
 
-Reply with ONLY a JSON object:
-{{"intent": "<intent>", "parameters": {{}}, "answer": "<detailed Chinese answer>", "chart_type": "<bar|line|pie|scatter|map|null>"}}
+仅回复JSON:
+{{"intent": "<intent>", "parameters": {{}}, "answer": "<中文回答>", "chart_type": "<bar|line|pie|scatter|map|null>"}}
 
-Data intents: top_products, bottom_products, top_countries, country_ranking, country_detail, monthly_trend, recent_period, hourly_pattern, weekday_pattern, rfm_segments, rfm_champions, rfm_atrisk, customer_count, search_product, basket_association, total_revenue, avg_order_value, return_analysis, overview
-Use intent "general_qa" for any non-data question (conversation, advice, explanations, general knowledge, etc.)
-
-Rules:
-- For "search_product" add "keyword" in parameters
-- For "top_products" add "n" (default 10)
-- For "general_qa": answer helpfully in Chinese, chart_type MUST be null
-- Always answer in Chinese. Be helpful, friendly, and data-driven when possible.
-- If the question is unrelated to the dataset, answer it conversationally (general_qa) — do NOT refuse.
-- If the question relates to e-commerce but the data can't answer it directly, give your best advice as an AI."""
+规则:
+- search_product加"keyword"参数
+- top_products加"n"参数(默认10)
+- general_qa: 用中文回答, chart_type=null
+- 始终用中文回答
+- 与数据无关的问题使用general_qa"""
 
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
     resp = client.chat.completions.create(
         model="deepseek-chat",
         messages=[{"role": "system", "content": system}, {"role": "user", "content": query}],
-        temperature=0.3, max_tokens=800,
+        temperature=0.3, max_tokens=400,
     )
 
     raw = resp.choices[0].message.content.strip()
@@ -400,8 +437,14 @@ Rules:
     except Exception:
         pass
 
-    return {"intent": intent, "chart_type": chart_type, "data": data,
-            "answer": answer or "分析完成", "matched": True}
+    result = {"intent": intent, "chart_type": chart_type, "data": data,
+              "answer": answer or "分析完成", "matched": True}
+
+    # Store in cache (LRU eviction)
+    if len(_llm_cache) >= CACHE_MAX_SIZE:
+        _llm_cache.pop(next(iter(_llm_cache)))
+    _llm_cache[cache_key] = result.copy()
+    return result
 
 
 def get_example_questions():
